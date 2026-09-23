@@ -1,0 +1,14 @@
+{
+  "name": "permly-example-express-esm",
+  "private": true,
+  "description": "permly + Express, plain JavaScript with import",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "mysql2": "^3.14.0",
+    "permly": "file:../.."
+  }
+}

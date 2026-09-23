@@ -1,7 +1,7 @@
-import { InvalidInputError } from "../core/errors";
+import { InvalidInputError, PermissionsError } from "../core/errors";
 import type { PermissionAdapter, UserAccess } from "../core/types";
 import { mysqlTables } from "./mysql-schema";
-import { chunk, placeholders, retryOnce } from "./sql-shared";
+import { chunk, placeholders, retryOnce, userLockName, validatePrefix } from "./sql-shared";
 
 export { mysqlSchema, mysqlSchemaStatements } from "./mysql-schema";
 
@@ -48,7 +48,8 @@ export function mysqlAdapter(
   options: MySqlAdapterOptions = {},
 ): PermissionAdapter {
   assertPromisePool(pool);
-  const t = mysqlTables(options.prefix);
+  const prefix = validatePrefix(options.prefix);
+  const t = mysqlTables(prefix);
   // Only rows not tied to a team. team_id is reserved for future team support.
   const NO_TEAM = "''";
 
@@ -79,30 +80,36 @@ export function mysqlAdapter(
     return retryOnce(async () => {
       const connection = await pool.getConnection();
       let locked = false;
+      let began = false;
       try {
         if (lockName !== undefined) {
           const [row] = await query(
-            "SELECT GET_LOCK(SHA1(?), ?) AS locked",
+            "SELECT GET_LOCK(?, ?) AS locked",
             [lockName, USER_LOCK_TIMEOUT_SECONDS],
             connection,
           );
+          // 1 = acquired, 0 = timed out, NULL = error (e.g. the wait was killed).
           if (Number(row?.locked) !== 1) {
-            throw Object.assign(new Error(`Timed out waiting for lock "${lockName}".`), {
-              code: "ER_LOCK_WAIT_TIMEOUT",
-            });
+            throw new PermissionsError(
+              "LOCK_TIMEOUT",
+              `Timed out after ${USER_LOCK_TIMEOUT_SECONDS}s waiting for lock "${lockName}", held by another syncRoles() for the same user.`,
+            );
           }
           locked = true;
         }
         await query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED", [], connection);
         await connection.beginTransaction();
+        began = true;
         await fn(connection);
         await connection.commit();
       } catch (err) {
-        await connection.rollback().catch(() => {});
+        if (began) await connection.rollback().catch(() => {});
         throw err;
       } finally {
         if (locked) {
-          await query("SELECT RELEASE_LOCK(SHA1(?))", [lockName], connection).catch(() => {});
+          // Same connection that took the lock. If this fails the connection is broken, and
+          // MySQL frees a broken connection's locks itself.
+          await query("SELECT RELEASE_LOCK(?)", [lockName], connection).catch(() => {});
         }
         connection.release();
       }
@@ -254,14 +261,17 @@ export function mysqlAdapter(
       // There is no user row to lock, and under READ COMMITTED two syncs for a user with no
       // roles would both delete nothing and both insert, leaving a mix. The named lock
       // makes them run one after the other instead.
-      await transaction(async (db) => {
-        await query(
-          `DELETE FROM ${t.userRoles} WHERE user_id = ? AND team_id = ${NO_TEAM}`,
-          [userId],
-          db,
-        );
-        await insertUserRoles(db, userId, roles);
-      }, `permly:${t.userRoles}:${userId}`);
+      await transaction(
+        async (db) => {
+          await query(
+            `DELETE FROM ${t.userRoles} WHERE user_id = ? AND team_id = ${NO_TEAM}`,
+            [userId],
+            db,
+          );
+          await insertUserRoles(db, userId, roles);
+        },
+        userLockName(prefix, userId),
+      );
     },
 
     async addUserPermissions(userId, perms) {

@@ -3,7 +3,8 @@ import mysql, { type Pool } from "mysql2/promise";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mysqlAdapter, mysqlSchema, mysqlSchemaStatements } from "../../src/adapters/mysql";
 import { createPermissions } from "../../src/core/create-permissions";
-import { InvalidInputError } from "../../src/core/errors";
+import { InvalidInputError, isPermissionsError } from "../../src/core/errors";
+import { userLockName } from "../../src/adapters/sql-shared";
 import { runAdapterContract } from "./adapter-contract";
 import { connectOrSkip } from "./db";
 
@@ -214,6 +215,50 @@ for (const target of targets) {
         expect(mixed).toEqual([]);
       });
 
+      it("syncRoles works for a 64-character user id", async () => {
+        const db = adapter();
+        await db.createRoles(["a", "b"]);
+        const id = "x".repeat(64);
+        await db.setUserRoles(id, ["a", "b"]);
+        expect((await db.getUserAccess(id)).roles.sort()).toEqual(["a", "b"]);
+      });
+
+      it("returns pooled connections at the default isolation level", async () => {
+        // One connection, so every call below is guaranteed to reuse it.
+        const single = mysql.createPool({ uri: target.url, connectionLimit: 1 });
+        const scalar = async (sql: string, db: Pick<Pool, "query"> = single) => {
+          const [rows] = await db.query(sql);
+          return Object.values((rows as Record<string, unknown>[])[0] ?? {})[0];
+        };
+        try {
+          const db = mysqlAdapter(single, { prefix: PREFIX });
+          await db.createRoles(["a"]);
+          const connectionId = await scalar("SELECT CONNECTION_ID()");
+
+          await db.setUserRoles("iso", ["a"]);
+          await db.setRolePermissions("a", []);
+
+          expect(await scalar("SELECT CONNECTION_ID()")).toBe(connectionId);
+          expect(await scalar("SELECT @@SESSION.transaction_isolation")).toBe("REPEATABLE-READ");
+
+          // And the next transaction really is REPEATABLE READ: a row another connection commits
+          // mid-transaction stays invisible to it.
+          const connection = await single.getConnection();
+          try {
+            await connection.beginTransaction();
+            const countRoles = `SELECT COUNT(*) FROM \`${PREFIX}roles\``;
+            const before = await scalar(countRoles, connection);
+            await pool.query(`INSERT INTO \`${PREFIX}roles\` (name) VALUES ('iso-probe')`);
+            expect(await scalar(countRoles, connection)).toBe(before);
+            await connection.rollback();
+          } finally {
+            connection.release();
+          }
+        } finally {
+          await single.end();
+        }
+      });
+
       it("getUserAccess is one indexed query", async () => {
         // Enough data that the optimizer picks indexes the way it would in production.
         const db = adapter();
@@ -320,19 +365,26 @@ describe("mysqlAdapter input checks (no database needed)", () => {
 });
 
 describe("mysqlAdapter transactions (fake pool)", () => {
-  function fakePool(failures: { code: string }[], lockGranted = true) {
+  /** `lockGranted`: true = GET_LOCK returns 1, false = 0 (timeout), null = NULL (error). */
+  function fakePool(failures: { code: string }[], lockGranted: boolean | null = true) {
     const log: string[] = [];
+    const lockNames: string[] = [];
     const connection = {
       beginTransaction: async () => void log.push("begin"),
       commit: async () => void log.push("commit"),
       rollback: async () => void log.push("rollback"),
       release: () => void log.push("release"),
-      query: async ({ sql }: { sql: string }): Promise<[unknown, unknown]> => {
+      query: async (
+        { sql }: { sql: string },
+        values: unknown[] = [],
+      ): Promise<[unknown, unknown]> => {
         if (sql.includes("GET_LOCK")) {
-          log.push(lockGranted ? "lock" : "lock-timeout");
-          return [[{ locked: lockGranted ? 1 : 0 }], []];
+          lockNames.push(String(values[0]));
+          log.push(lockGranted === true ? "lock" : "lock-timeout");
+          return [[{ locked: lockGranted === true ? 1 : lockGranted === false ? 0 : null }], []];
         }
         if (sql.includes("RELEASE_LOCK")) {
+          lockNames.push(String(values[0]));
           log.push("unlock");
           return [[], []];
         }
@@ -355,6 +407,7 @@ describe("mysqlAdapter transactions (fake pool)", () => {
     };
     return {
       log,
+      lockNames,
       pool: { query: connection.query, getConnection: async () => connection },
     };
   }
@@ -395,19 +448,38 @@ describe("mysqlAdapter transactions (fake pool)", () => {
     ]);
   });
 
-  it("treats a user-lock timeout as retryable, then gives up", async () => {
-    const { pool, log } = fakePool([], false);
-    await expect(mysqlAdapter(pool).setUserRoles("1", ["a"])).rejects.toMatchObject({
-      code: "ER_LOCK_WAIT_TIMEOUT",
-    });
-    expect(log).toEqual([
-      "lock-timeout",
-      "rollback",
-      "release",
-      "lock-timeout",
-      "rollback",
-      "release",
-    ]);
+  it.each([
+    [false, "timeout"],
+    [null, "error"],
+  ])(
+    "throws a clear PermissionsError when GET_LOCK returns %s (%s), without retrying",
+    async (granted, _meaning) => {
+      const { pool, log } = fakePool([], granted);
+      const error = await mysqlAdapter(pool)
+        .setUserRoles("1", ["a"])
+        .catch((e: unknown) => e);
+      expect(isPermissionsError(error)).toBe(true);
+      expect(error).toMatchObject({ code: "LOCK_TIMEOUT" });
+      expect((error as Error).message).toMatch(
+        /^Timed out after 10s waiting for lock "permly:perm_:[0-9a-f]{16}", held by another syncRoles\(\) for the same user\.$/,
+      );
+      // No transaction was started, and the lock was never held, so neither is undone.
+      expect(log).toEqual(["lock-timeout", "release"]);
+    },
+  );
+
+  it("uses a short hashed lock name, even for a 64-character user id", async () => {
+    const longId = "u".repeat(64);
+    const { pool, lockNames } = fakePool([]);
+    await mysqlAdapter(pool, { prefix: "a".repeat(32) }).setUserRoles(longId, ["a"]);
+
+    const [taken, released] = lockNames;
+    expect(taken).toBe(released); // same name for GET_LOCK and RELEASE_LOCK
+    expect(taken).toMatch(/^permly:a{32}:[0-9a-f]{16}$/);
+    expect(taken?.length).toBeLessThanOrEqual(64);
+    expect(taken).not.toContain(longId);
+    expect(userLockName("perm_", "1")).not.toBe(userLockName("perm_", "2"));
+    expect(userLockName("perm_", "1")).not.toBe(userLockName("other_", "1"));
   });
 
   it("gives up after one retry", async () => {

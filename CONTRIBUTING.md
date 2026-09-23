@@ -20,6 +20,12 @@ npm run db:down
 - `PERMLY_EXPLAIN=1` prints the query plan of `getUserAccess` for each database.
 - Every adapter runs the shared suite in `test/adapters/adapter-contract.ts`.
 - `node scripts/gen-type-bench.mjs` regenerates the 200-permission type test.
+- Express middleware tests run against both Express 4 and 5 (installed as `express4` /
+  `express5` aliases).
+- `npm run examples:test` packs the package, installs the tarball into a temp copy of each
+  example, builds it if needed, starts it and checks its responses. Set
+  `EXAMPLES_DATABASE_URL` to also run each example against MySQL (it creates `perm_*` tables
+  there).
 
 ## Rules
 

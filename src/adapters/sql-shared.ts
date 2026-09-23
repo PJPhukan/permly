@@ -1,4 +1,5 @@
 // Helpers shared by the SQL adapters. Bundled into each adapter; nothing here is public.
+import { createHash } from "node:crypto";
 import { InvalidInputError } from "../core/errors";
 
 export const DEFAULT_PREFIX = "perm_";
@@ -43,6 +44,16 @@ export function tableNames(prefix: string, quote: (name: string) => string): Tab
     userRoles: quote(`${prefix}user_roles`),
     userPermissions: quote(`${prefix}user_permissions`),
   };
+}
+
+/**
+ * Name of the per-user lock taken by syncRoles. MySQL caps lock names at 64 characters, so the
+ * user id (up to 64 characters itself) is hashed: at most 7 + 32 + 1 + 16 = 56 characters.
+ * A hash collision would only make two users' syncs wait for each other, never mix data.
+ */
+export function userLockName(prefix: string, userId: string): string {
+  const hash = createHash("sha1").update(userId).digest("hex").slice(0, 16);
+  return `permly:${prefix}:${hash}`;
 }
 
 export function chunk<T>(items: readonly T[], size = CHUNK_SIZE): T[][] {

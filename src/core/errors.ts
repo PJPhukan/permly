@@ -3,7 +3,12 @@
 const BRAND = Symbol.for("permly.error");
 
 export type PermissionsErrorCode =
-  "PERMISSION_DENIED" | "ROLE_NOT_FOUND" | "PERMISSION_NOT_FOUND" | "INVALID_INPUT";
+  | "PERMISSION_DENIED"
+  | "ROLE_NOT_FOUND"
+  | "PERMISSION_NOT_FOUND"
+  | "INVALID_INPUT"
+  /** A database adapter could not get a lock in time (e.g. many concurrent syncRoles). */
+  | "LOCK_TIMEOUT";
 
 export class PermissionsError extends Error {
   readonly code: PermissionsErrorCode;
