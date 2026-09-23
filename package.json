@@ -14,6 +14,22 @@
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.cts",
+  "bin": {
+    "permly": "dist/cli.js"
+  },
+  "typesVersions": {
+    "*": {
+      "memory": [
+        "./dist/memory.d.ts"
+      ],
+      "mysql": [
+        "./dist/mysql.d.ts"
+      ],
+      "express": [
+        "./dist/express.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "import": {
@@ -58,7 +74,7 @@
     "./package.json": "./package.json"
   },
   "scripts": {
-    "build": "tsup",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsup",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

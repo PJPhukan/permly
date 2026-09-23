@@ -1,7 +1,8 @@
 import { InvalidInputError, PermissionsError } from "../core/errors";
 import type { PermissionAdapter, UserAccess } from "../core/types";
 import { mysqlTables } from "./mysql-schema";
-import { chunk, placeholders, retryOnce, userLockName, validatePrefix } from "./sql-shared";
+import { userLockName } from "./mysql-lock";
+import { chunk, placeholders, retryOnce, validatePrefix } from "./sql-shared";
 
 export { mysqlSchema, mysqlSchemaStatements } from "./mysql-schema";
 

@@ -6,18 +6,28 @@
 // Each example is copied to a temp dir, gets the tarball installed as "permly", is built if it
 // has a build script, started on a random port, and checked with real HTTP requests.
 // With EXAMPLES_DATABASE_URL, each example also runs once against MySQL.
+//
+// Then the CLI flow (scripts/cli-flow.mjs): fresh folders, npx permly init + migrate, sync(),
+// can(). It uses EXAMPLES_DATABASE_URL, or the docker compose MySQL, and skips if neither is
+// reachable (fails instead with PERMLY_REQUIRE_DB=1).
 import { spawn, execFileSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { testCliFlow } from "./cli-flow.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const work = mkdtempSync(join(tmpdir(), "permly-examples-"));
 const databaseUrl = process.env.EXAMPLES_DATABASE_URL;
 
+// Windows needs a shell to run npm.cmd.
 function run(cmd, args, cwd) {
-  execFileSync(cmd, args, { cwd, stdio: ["ignore", "ignore", "inherit"] });
+  execFileSync(cmd, args, {
+    cwd,
+    shell: process.platform === "win32",
+    stdio: ["ignore", "ignore", "inherit"],
+  });
 }
 
 /** Starts the example's `npm start` command directly with node and waits for its URL. */
@@ -95,7 +105,10 @@ async function check(url) {
 let failed = false;
 try {
   const [{ filename }] = JSON.parse(
-    execFileSync(npm, ["pack", "--json", "--pack-destination", work], { cwd: root }),
+    execFileSync(npm, ["pack", "--json", "--pack-destination", work], {
+      cwd: root,
+      shell: process.platform === "win32",
+    }),
   );
   const tarball = join(work, filename);
   console.log(`Packed ${filename}`);
@@ -139,6 +152,13 @@ try {
       }
     }
   }
+
+  const cliOk = await testCliFlow({
+    tarball,
+    work,
+    databaseUrl: databaseUrl ?? "mysql://root:permly@127.0.0.1:33061/permly",
+  });
+  if (!cliOk) failed = true;
 } catch (err) {
   failed = true;
   console.error(err);

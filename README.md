@@ -3,11 +3,66 @@
 Simple roles & permissions for Node.js. Zero dependencies.
 
 > **Draft.** The full README (API reference, caching, FAQ) comes before the first release.
-> This covers the core idea, Express and MySQL setup.
+
+## Quick start (MySQL / MariaDB)
 
 ```sh
-npm install permly
+npm install permly mysql2
+npx permly init
 ```
+
+`init` asks three questions (database, table prefix, migrations folder), detects TypeScript
+and ES modules vs CommonJS, and creates:
+
+- `migrations/<timestamp>_permly_init.sql`, the tables (safe to run more than once)
+- `src/permly.js` (or `.ts`), your permissions setup, ready to import
+
+Create the tables, then use it:
+
+```sh
+DATABASE_URL=mysql://user:password@localhost:3306/mydb npx permly migrate
+```
+
+```js
+import { perms, setupPermissions } from "./src/permly.js";
+
+await setupPermissions(); // once at startup: creates roles/permissions, grants defaults
+
+await perms.user(1).assignRole("editor");
+await perms.user(1).can("posts.create"); // true
+await perms.user(1).can("posts.delete"); // false
+await perms.user(1).canOwn("posts.edit", post.userId); // true only for their own posts
+```
+
+Edit the roles and permissions in `src/permly.js` to fit your app.
+
+### CLI reference
+
+```text
+npx permly init       Create the SQL file and the starter src/permly.(js|ts)
+npx permly migrate    Create the tables in DATABASE_URL (never changes existing tables)
+
+--db mysql            Database (postgres and mongodb coming soon)
+--prefix <prefix>     Table prefix, default perm_
+--out <dir>           init: folder for the SQL file, default migrations
+--ts / --js           init: starter file language (default: detected)
+--esm / --cjs         init: module format for JavaScript (default: detected)
+--force               init: overwrite existing files (otherwise it asks, or refuses in CI)
+--url <url>           migrate: database URL instead of DATABASE_URL
+--yes                 migrate: skip the confirmation
+```
+
+In CI (no terminal) nothing is ever prompted: use `npx permly init --db mysql` and
+`npx permly migrate --yes`. `migrate` shows the target database but never prints the
+password. It uses the `mysql2` installed in your project.
+
+> **Using Prisma?** Don't run permly's SQL alongside `prisma migrate`: Prisma sees tables it
+> doesn't manage as drift and may offer to reset the database. Proper Prisma support comes
+> later; until then, keep permly's tables in a database Prisma doesn't migrate.
+
+### Without a database
+
+For tests and prototypes, the in-memory adapter needs no setup:
 
 ```js
 import { createPermissions } from "permly";
@@ -20,13 +75,8 @@ const perms = createPermissions({
 });
 
 await perms.sync(); // creates the roles and permissions above if missing
-
 await perms.role("editor").givePermission("posts.create", "posts.edit.own");
 await perms.role("admin").givePermission("posts.*");
-await perms.user(1).assignRole("editor");
-
-await perms.user(1).can("posts.create"); // true
-await perms.user(1).canOwn("posts.edit", post.userId); // true only for their own posts
 ```
 
 ## Express
@@ -125,7 +175,8 @@ npm install permly mysql2
 
 ### 1. Create the tables
 
-The tables are prefixed with `perm_` by default. Run the schema once, e.g. in a migration:
+The easiest way is `npx permly migrate` (see Quick start). To run the SQL yourself, e.g. with
+your own migration tool, use the file `permly init` generated, or get it from code:
 
 ```js
 import { mysqlSchema } from "permly/mysql";

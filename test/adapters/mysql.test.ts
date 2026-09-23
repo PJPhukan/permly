@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { mysqlAdapter, mysqlSchema, mysqlSchemaStatements } from "../../src/adapters/mysql";
 import { createPermissions } from "../../src/core/create-permissions";
 import { InvalidInputError, isPermissionsError } from "../../src/core/errors";
-import { userLockName } from "../../src/adapters/sql-shared";
+import { userLockName } from "../../src/adapters/mysql-lock";
 import { runAdapterContract } from "./adapter-contract";
 import { connectOrSkip } from "./db";
 

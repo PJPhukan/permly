@@ -20,6 +20,9 @@ npm run db:down
 - `PERMLY_EXPLAIN=1` prints the query plan of `getUserAccess` for each database.
 - Every adapter runs the shared suite in `test/adapters/adapter-contract.ts`.
 - `node scripts/gen-type-bench.mjs` regenerates the 200-permission type test.
+- CLI tests spawn the built `dist/cli.js` (the test run builds first) in temp folders.
+  `PERMLY_CLI_INTERACTIVE=1` makes the CLI prompt even when stdin is a pipe, so tests can type
+  answers.
 - Express middleware tests run against both Express 4 and 5 (installed as `express4` /
   `express5` aliases).
 - `npm run examples:test` packs the package, installs the tarball into a temp copy of each
