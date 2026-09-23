@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     memory: "src/adapters/memory.ts",
+    mysql: "src/adapters/mysql.ts",
   },
   format: ["cjs", "esm"],
   dts: true,

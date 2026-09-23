@@ -1,0 +1,32 @@
+# Databases for the adapter tests: `docker compose up -d --wait`, then `npm test`.
+# Non-standard host ports avoid clashing with databases you may already run.
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: permly
+      MYSQL_DATABASE: permly
+    ports:
+      - "127.0.0.1:33061:3306"
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-ppermly"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  mariadb:
+    image: mariadb:11
+    environment:
+      MARIADB_ROOT_PASSWORD: permly
+      MARIADB_DATABASE: permly
+    ports:
+      - "127.0.0.1:33062:3306"
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      timeout: 5s
+      retries: 30

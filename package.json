@@ -35,6 +35,16 @@
         "default": "./dist/memory.cjs"
       }
     },
+    "./mysql": {
+      "import": {
+        "types": "./dist/mysql.d.ts",
+        "default": "./dist/mysql.js"
+      },
+      "require": {
+        "types": "./dist/mysql.d.cts",
+        "default": "./dist/mysql.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -45,7 +55,18 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build"
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm test && npm run build",
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "test:ci": "PERMLY_REQUIRE_DB=1 vitest run"
+  },
+  "peerDependencies": {
+    "mysql2": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "mysql2": {
+      "optional": true
+    }
   },
   "keywords": [
     "permissions",
@@ -54,7 +75,9 @@
     "acl",
     "authorization",
     "access-control",
-    "express"
+    "express",
+    "mysql",
+    "mariadb"
   ],
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -62,6 +85,7 @@
     "eslint": "^10.11.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.12.0",
+    "mysql2": "^3.24.4",
     "prettier": "^3.9.9",
     "tsup": "^8.5.1",
     "typescript": "~5.9",
