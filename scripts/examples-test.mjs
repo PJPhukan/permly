@@ -8,8 +8,9 @@
 // With EXAMPLES_DATABASE_URL, each example also runs once against MySQL.
 //
 // Then the CLI flow (scripts/cli-flow.mjs): fresh folders, npx permly init + migrate, sync(),
-// can(). It uses EXAMPLES_DATABASE_URL, or the docker compose MySQL, and skips if neither is
-// reachable (fails instead with PERMLY_REQUIRE_DB=1).
+// can() and a restart, for MySQL (EXAMPLES_DATABASE_URL) and Postgres (EXAMPLES_POSTGRES_URL),
+// defaulting to the docker compose databases. A database that can't be reached is skipped
+// (or fails the run with PERMLY_REQUIRE_DB=1).
 import { spawn, execFileSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -153,11 +154,7 @@ try {
     }
   }
 
-  const cliOk = await testCliFlow({
-    tarball,
-    work,
-    databaseUrl: databaseUrl ?? "mysql://root:permly@127.0.0.1:33061/permly",
-  });
+  const cliOk = await testCliFlow({ tarball, work });
   if (!cliOk) failed = true;
 } catch (err) {
   failed = true;

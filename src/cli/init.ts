@@ -1,11 +1,23 @@
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { DEFAULT_PREFIX, validatePrefix } from "../adapters/sql-shared";
+import {
+  DEFAULT_PREFIX,
+  DEFAULT_SCHEMA,
+  validatePrefix,
+  validateSchema,
+} from "../adapters/sql-shared";
 import { checkDatabase, DATABASES, SUPPORTED_DATABASES, UsageError, type Flags } from "./args";
 import { detectProject, isInstalled, type Project } from "./detect";
 import { out, print } from "./output";
 import type { Prompter } from "./prompt";
-import { migrationSql, starterFile, type Language, type ModuleFormat } from "./templates";
+import {
+  DRIVERS,
+  migrationSql,
+  starterFile,
+  type Database,
+  type Language,
+  type ModuleFormat,
+} from "./templates";
 
 interface PlannedFile {
   path: string;
@@ -18,7 +30,7 @@ export async function init(flags: Flags, prompter: Prompter | undefined, version
 
   if (!prompter && flags.db === undefined) {
     throw new UsageError(
-      `Missing --db. Without a terminal to ask in, pass it explicitly: permly init --db mysql`,
+      `Missing --db. Without a terminal to ask in, pass it explicitly: permly init --db mysql (or --db postgres)`,
     );
   }
 
@@ -30,26 +42,43 @@ export async function init(flags: Flags, prompter: Prompter | undefined, version
   }
 
   // Without a prompter, --db was checked above.
-  const db =
+  const db: Database =
     flags.db !== undefined || !prompter
       ? checkDatabase(flags.db ?? "")
       : await askDatabase(prompter);
+  if (db !== "postgres" && flags.schema !== undefined) {
+    throw new UsageError("--schema is only used with Postgres (--db postgres).");
+  }
   const prefix =
     flags.prefix !== undefined
-      ? checkPrefix(flags.prefix)
+      ? toUsage(() => validatePrefix(flags.prefix))
       : prompter
         ? await prompter.askValid("Table prefix?", DEFAULT_PREFIX, validatePrefix)
         : DEFAULT_PREFIX;
+  const schema =
+    db !== "postgres"
+      ? DEFAULT_SCHEMA
+      : flags.schema !== undefined
+        ? toUsage(() => validateSchema(flags.schema))
+        : prompter
+          ? await prompter.askValid("Postgres schema?", DEFAULT_SCHEMA, validateSchema)
+          : DEFAULT_SCHEMA;
   const outDir =
     flags.out ??
     (prompter ? await prompter.ask("Folder for the SQL migration?", "migrations") : "migrations");
 
   let language: Language = flags.ts ? "ts" : flags.js ? "js" : project.typescript ? "ts" : "js";
   let format: ModuleFormat = flags.esm ? "esm" : flags.cjs ? "cjs" : project.esm ? "esm" : "cjs";
-  const driverInstalled = isInstalled(cwd, "mysql2");
+  const { driver } = DRIVERS[db];
+  const driverInstalled = isInstalled(cwd, driver);
 
-  print(`  Using:    ${db} · table prefix ${prefix} · SQL file in ${outDir}`);
-  print(`  Detected: ${describeSetup(language, format)} · ${driverLabel(driverInstalled)}`);
+  const where = db === "postgres" ? ` · schema ${schema}` : "";
+  print(`  Using:    ${db}${where} · table prefix ${prefix} · SQL file in ${outDir}`);
+  print(
+    `  Detected: ${describeSetup(language, format)} · ${
+      driverInstalled ? `${driver} installed` : out.yellow(`${driver} not installed`)
+    }`,
+  );
   const languageFromFlag = flags.ts || flags.js;
   const formatFromFlag = flags.esm || flags.cjs || language === "ts";
   if (prompter && !(languageFromFlag && formatFromFlag)) {
@@ -68,10 +97,13 @@ export async function init(flags: Flags, prompter: Prompter | undefined, version
   }
 
   const files: PlannedFile[] = [
-    { path: migrationPath(resolve(cwd, outDir)), content: migrationSql(prefix, version) },
+    {
+      path: migrationPath(resolve(cwd, outDir)),
+      content: migrationSql(db, prefix, schema, version),
+    },
     {
       path: join(cwd, project.hasSrcDir ? "src" : "", starterFileName(language, format, project)),
-      content: starterFile({ language, format, prefix }),
+      content: starterFile({ db, language, format, prefix, schema }),
     },
   ];
 
@@ -91,10 +123,10 @@ export async function init(flags: Flags, prompter: Prompter | undefined, version
   }
 
   const [sqlFile, starter] = files.map((file) => relative(cwd, file.path)) as [string, string];
-  printNextSteps({ db, sqlFile, starter, prefix, driverInstalled });
+  printNextSteps({ db, sqlFile, starter, prefix, schema, driverInstalled });
 }
 
-async function askDatabase(prompter: Prompter): Promise<string> {
+async function askDatabase(prompter: Prompter): Promise<Database> {
   const labels = DATABASES.map((name, i) =>
     SUPPORTED_DATABASES.includes(name)
       ? `${i + 1}) ${name}`
@@ -106,9 +138,10 @@ async function askDatabase(prompter: Prompter): Promise<string> {
   );
 }
 
-function checkPrefix(prefix: string): string {
+/** Runs a validator on a flag value; its error becomes a usage error (exit code 2). */
+function toUsage<T>(validate: () => T): T {
   try {
-    return validatePrefix(prefix);
+    return validate();
   } catch (error) {
     throw new UsageError(error instanceof Error ? error.message : String(error));
   }
@@ -123,10 +156,6 @@ function oneOf<T extends string>(answer: string, options: T[]): T {
 function describeSetup(language: Language, format: ModuleFormat): string {
   if (language === "ts") return "TypeScript";
   return format === "esm" ? "JavaScript (ES modules)" : "JavaScript (CommonJS)";
-}
-
-function driverLabel(installed: boolean): string {
-  return installed ? "mysql2 installed" : out.yellow("mysql2 not installed");
 }
 
 /** Reuses an existing "*_permly_init.sql" so running init twice doesn't create two migrations. */
@@ -170,21 +199,26 @@ async function decideOverwrites(
 }
 
 function printNextSteps(options: {
-  db: string;
+  db: Database;
   sqlFile: string;
   starter: string;
   prefix: string;
+  schema: string;
   driverInstalled: boolean;
 }) {
-  const { sqlFile, starter, prefix, driverInstalled } = options;
+  const { db, sqlFile, starter, prefix, schema, driverInstalled } = options;
+  const { driver, label, urlExample } = DRIVERS[db];
   const steps: string[] = [];
   if (!driverInstalled) {
-    steps.push(`Install the MySQL driver:\n       ${out.cyan("npm install mysql2")}`);
+    steps.push(`Install the ${label} driver:\n       ${out.cyan(`npm install ${driver}`)}`);
   }
-  const prefixFlag = prefix === DEFAULT_PREFIX ? "" : ` --prefix ${prefix}`;
+  const flags = [
+    prefix === DEFAULT_PREFIX ? "" : ` --prefix ${prefix}`,
+    schema === DEFAULT_SCHEMA ? "" : ` --schema ${schema}`,
+  ].join("");
   steps.push(
-    `Create the tables. Set DATABASE_URL (mysql://user:password@host:3306/db), then:\n` +
-      `       ${out.cyan(`npx permly migrate${prefixFlag}`)}\n` +
+    `Create the tables. Set DATABASE_URL (${urlExample}), then:\n` +
+      `       ${out.cyan(`npx permly migrate${flags}`)}\n` +
       `     ${out.dim(`or run ${sqlFile} with your own migration tool.`)}`,
   );
   steps.push(

@@ -11,9 +11,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import mysql, { type Pool } from "mysql2/promise";
+import mysql from "mysql2/promise";
+import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { mysqlSchema } from "../../src/adapters/mysql-schema";
+import { postgresSchema } from "../../src/adapters/postgres-schema";
 import { connectOrSkip } from "../adapters/db";
 
 const ROOT = resolve(import.meta.dirname, "../..");
@@ -65,9 +67,21 @@ afterEach(() => {
   for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** A throwaway project folder. `mysql2: "fake"` is enough for detection; "real" can connect. */
+type Install = "fake" | "real";
+
+/**
+ * A throwaway project folder. A "fake" driver is enough for detection; a "real" one (linked
+ * from this repo) can connect. `permly: true` links this repo's built package in.
+ */
 function project(
-  options: { type?: "module"; ts?: boolean; src?: boolean; mysql2?: "fake" | "real" } = {},
+  options: {
+    type?: "module";
+    ts?: boolean;
+    src?: boolean;
+    mysql2?: Install;
+    pg?: Install;
+    permly?: boolean;
+  } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "permly-cli-"));
   temps.push(dir);
@@ -77,17 +91,20 @@ function project(
   );
   if (options.ts) writeFileSync(join(dir, "tsconfig.json"), "{}");
   if (options.src ?? true) mkdirSync(join(dir, "src"));
-  if (options.mysql2 === "fake") {
-    const pkg = join(dir, "node_modules/mysql2");
-    mkdirSync(pkg, { recursive: true });
-    writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "mysql2", main: "index.js" }));
-    writeFileSync(join(pkg, "index.js"), "module.exports = {};");
-    writeFileSync(join(pkg, "promise.js"), "module.exports = {};");
+  mkdirSync(join(dir, "node_modules"));
+  const link = (name: string, target: string) =>
+    symlinkSync(target, join(dir, "node_modules", name), "junction");
+  for (const driver of ["mysql2", "pg"] as const) {
+    if (options[driver] === "fake") {
+      const pkg = join(dir, "node_modules", driver);
+      mkdirSync(pkg);
+      writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: driver, main: "index.js" }));
+      writeFileSync(join(pkg, "index.js"), "module.exports = {};");
+      writeFileSync(join(pkg, "promise.js"), "module.exports = {};");
+    }
+    if (options[driver] === "real") link(driver, join(ROOT, "node_modules", driver));
   }
-  if (options.mysql2 === "real") {
-    mkdirSync(join(dir, "node_modules"));
-    symlinkSync(join(ROOT, "node_modules/mysql2"), join(dir, "node_modules/mysql2"), "junction");
-  }
+  if (options.permly) link("permly", ROOT);
   return dir;
 }
 
@@ -129,7 +146,14 @@ describe("general", () => {
   });
 
   it("the library entries never load the CLI", () => {
-    for (const file of ["index.js", "index.cjs", "mysql.js", "express.js", "memory.js"]) {
+    for (const file of [
+      "index.js",
+      "index.cjs",
+      "mysql.js",
+      "postgres.js",
+      "express.js",
+      "memory.js",
+    ]) {
       const code = read(join(ROOT, "dist"), file);
       expect(code, file).not.toMatch(/readline|parseArgs|permly init/);
     }
@@ -229,9 +253,11 @@ describe("init (non-interactive)", () => {
 
   it.each([
     [["init"], 2, "Missing --db"],
-    [["init", "--db", "postgres"], 2, "postgres support is coming soon"],
+    [["init", "--db", "mongodb"], 2, "mongodb support is coming soon"],
     [["init", "--db", "oracle"], 2, 'Unknown database "oracle"'],
     [["init", "--db", "mysql", "--prefix", "bad-prefix"], 2, "Table prefix must contain only"],
+    [["init", "--db", "mysql", "--schema", "x"], 2, "--schema is only used with Postgres"],
+    [["init", "--db", "postgres", "--schema", "bad schema"], 2, "Schema must be 1-63"],
   ])("fails clearly without a terminal: %j", async (args, code, message) => {
     const dir = project();
     const result = await cli(args, dir);
@@ -241,27 +267,97 @@ describe("init (non-interactive)", () => {
   });
 });
 
+describe("init for Postgres", () => {
+  it("TypeScript: pg Pool, postgresAdapter, schema from postgresSchema()", async () => {
+    const dir = project({ ts: true, type: "module", pg: "fake" });
+    const result = await cli(["init", "--db", "postgres"], dir);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Detected: TypeScript · pg installed");
+    expect(result.stdout).not.toContain("npm install pg");
+    expect(result.stdout).toContain("postgres://user:password@localhost:5432/mydb");
+
+    const [sql] = sqlFiles(dir);
+    expect(read(dir, `migrations/${sql}`)).toContain(postgresSchema());
+    const starter = read(dir, "src/permly.ts");
+    expect(starter).toContain(`import pg from "pg";`);
+    expect(starter).toContain(`import { postgresAdapter } from "permly/postgres";`);
+    expect(starter).toContain("postgresAdapter(new pg.Pool({ connectionString: url }))");
+  });
+
+  it("JavaScript ES modules and CommonJS starters parse", async () => {
+    const esm = project({ type: "module" });
+    await cli(["init", "--db", "postgres"], esm);
+    expect(parses(join(esm, "src/permly.js"))).toBe(true);
+
+    const cjs = project();
+    await cli(["init", "--db", "postgres"], cjs);
+    const starter = read(cjs, "src/permly.js");
+    expect(starter).toContain(`const { Pool } = require("pg");`);
+    expect(starter).toContain("postgresAdapter(new Pool({ connectionString: url }))");
+    expect(parses(join(cjs, "src/permly.js"))).toBe(true);
+  });
+
+  it("applies --schema and --prefix, accepts the postgresql alias, hints to install pg", async () => {
+    const dir = project();
+    const result = await cli(
+      ["init", "--db", "postgresql", "--schema", "tenant1", "--prefix", "app_"],
+      dir,
+    );
+    expect(result.code).toBe(0);
+    const [sql] = sqlFiles(dir);
+    expect(read(dir, `migrations/${sql}`)).toContain(`"tenant1"."app_roles"`);
+    expect(read(dir, "src/permly.js")).toContain(`{ prefix: "app_", schema: "tenant1" }`);
+    expect(result.stdout).toContain("pg not installed");
+    expect(result.stdout).toContain("npm install pg");
+    expect(result.stdout).toContain("npx permly migrate --prefix app_ --schema tenant1");
+  });
+});
+
+describe("the generated setupPermissions()", () => {
+  it("only grants defaults to roles sync() just created", async () => {
+    const dir = project({ type: "module" });
+    await cli(["init", "--db", "mysql"], dir);
+    const starter = read(dir, "src/permly.js");
+    expect(starter).toContain("const { createdRoles } = await perms.sync();");
+    expect(starter).toContain(`if (createdRoles.includes("admin")) {`);
+    expect(starter).toContain("kept across restarts");
+  });
+});
+
 describe("init (interactive prompts)", () => {
   it("accepts the defaults", async () => {
     const dir = project({ ts: true });
     const result = await cli(["init"], dir, { input: ["", "", "", ""] });
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("postgres (coming soon)");
+    expect(result.stdout).toContain("2) postgres");
+    expect(result.stdout).toContain("mongodb (coming soon)");
     expect(result.stdout).toContain("Use these settings?");
     expect(existsSync(join(dir, "src/permly.ts"))).toBe(true);
-    expect(sqlFiles(dir)).toHaveLength(1);
+    expect(read(dir, "src/permly.ts")).toContain("mysqlAdapter");
+  });
+
+  it("asks for the schema when Postgres is chosen", async () => {
+    const dir = project();
+    const result = await cli(["init"], dir, {
+      input: ["2", "", "bad schema!", "tenant1", "", ""],
+    });
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Postgres schema?");
+    expect(result.stdout).toContain("Schema must be 1-63");
+    const [sql] = sqlFiles(dir);
+    expect(read(dir, `migrations/${sql}`)).toContain(`"tenant1"."perm_roles"`);
   });
 
   it("re-asks on unsupported or invalid answers", async () => {
     const dir = project();
     const result = await cli(["init"], dir, {
-      input: ["2", "mongodb", "1", "bad-prefix", "app_", "db/sql", "maybe", "y"],
+      input: ["3", "mongodb", "1", "bad-prefix", "app_", "db/sql", "maybe", "y"],
     });
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("postgres support is coming soon");
     expect(result.stdout).toContain("mongodb support is coming soon");
     expect(result.stdout).toContain("Table prefix must contain only");
     expect(result.stdout).toContain("Please answer y or n.");
+    expect(result.stdout).not.toContain("Postgres schema?");
     const [sql] = sqlFiles(dir, "db/sql");
     expect(read(dir, `db/sql/${sql}`)).toContain("`app_roles`");
   });
@@ -311,133 +407,227 @@ describe("migrate (no database needed)", () => {
   const PASSWORD = "s3cret_Pw_42";
 
   it.each([
-    [[], {}, 2, "No database URL"],
-    [["--url", `not a url ${PASSWORD}`], {}, 2, "The database URL is not valid"],
-    [["--url", `postgres://u:${PASSWORD}@h/db`], {}, 2, 'Unsupported URL scheme "postgres:"'],
-    [["--url", `mysql://u:${PASSWORD}@h:3306/`], {}, 2, "has no database name"],
-    [["--url", `mysql://u:${PASSWORD}@h/db`, "--prefix", "no-no"], {}, 2, "Table prefix"],
-    [["--url", `mysql://u:${PASSWORD}@h/db`], {}, 2, "Pass --yes"],
-  ] as const)("%j fails with exit %i", async (args, env, code, message) => {
-    const result = await cli(["migrate", ...args], project({ mysql2: "real" }), { env });
+    [[], 2, "No database URL"],
+    [["--url", `not a url ${PASSWORD}`], 2, "The database URL is not valid"],
+    [["--url", `sqlite://u:${PASSWORD}@h/db`], 2, 'Unsupported URL scheme "sqlite:"'],
+    [["--url", `mysql://u:${PASSWORD}@h:3306/`], 2, "has no database name"],
+    [["--url", `mysql://u:${PASSWORD}@h/db`, "--prefix", "no-no"], 2, "Table prefix"],
+    [
+      ["--url", `mysql://u:${PASSWORD}@h/db`, "--schema", "x"],
+      2,
+      "--schema is only used with Postgres",
+    ],
+    [["--url", `postgres://u:${PASSWORD}@h/db`, "--db", "mysql"], 2, "doesn't match the URL"],
+    [["--url", `postgres://u:${PASSWORD}@h/db`, "--schema", "no way"], 2, "Schema must be 1-63"],
+    [["--url", `mysql://u:${PASSWORD}@h/db`], 2, "Pass --yes"],
+    [["--url", `postgresql://u:${PASSWORD}@h/db`], 2, "Pass --yes"],
+  ] as const)("%j fails with exit %i", async (args, code, message) => {
+    const result = await cli(["migrate", ...args], project({ mysql2: "real", pg: "real" }));
     expect(result.code).toBe(code);
     expect(result.stderr).toContain(message);
     expect(result.all).not.toContain(PASSWORD);
   });
 
-  it("explains how to install mysql2 when it is missing", async () => {
-    const result = await cli(["migrate", "--yes"], project(), {
-      env: { DATABASE_URL: `mysql://u:${PASSWORD}@127.0.0.1:1/db` },
-    });
+  it.each([
+    ["mysql2", `mysql://u:${PASSWORD}@127.0.0.1:1/db`],
+    ["pg", `postgres://u:${PASSWORD}@127.0.0.1:1/db`],
+  ])("explains how to install %s when it is missing", async (driver, url) => {
+    const result = await cli(["migrate", "--yes"], project(), { env: { DATABASE_URL: url } });
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain("mysql2 is not installed in this project");
-    expect(result.stderr).toContain("npm install mysql2");
+    expect(result.stderr).toContain(`${driver} is not installed in this project`);
+    expect(result.stderr).toContain(`npm install ${driver}`);
   });
 
-  it("reports an unreachable server without leaking the password", async () => {
+  it.each([
+    ["mysql", "mysql://root@127.0.0.1:1/db"],
+    ["postgres", "postgres://root@127.0.0.1:1/db"],
+  ])("reports an unreachable %s server without leaking the password", async (scheme, shown) => {
     const result = await cli(
-      ["migrate", "--yes", "--url", `mysql://root:${PASSWORD}@127.0.0.1:1/db`],
-      project({ mysql2: "real" }),
+      ["migrate", "--yes", "--url", `${scheme}://root:${PASSWORD}@127.0.0.1:1/db`],
+      project({ mysql2: "real", pg: "real" }),
     );
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain("Could not connect to mysql://root@127.0.0.1:1/db");
+    expect(result.stderr).toContain(`Could not connect to ${shown}`);
     expect(result.all).not.toContain(PASSWORD);
   });
 });
 
-const targets = [
-  [
-    "MySQL 8",
-    "PERMLY_MYSQL_URL",
-    process.env.PERMLY_MYSQL_URL ?? "mysql://root:permly@127.0.0.1:33061/permly",
-  ],
-  [
-    "MariaDB 11",
-    "PERMLY_MARIADB_URL",
-    process.env.PERMLY_MARIADB_URL ?? "mysql://root:permly@127.0.0.1:33062/permly",
-  ],
-] as const;
+// --- against real databases ---
 
-for (const [label, envVar, adminUrl] of targets) {
-  const pool = await connectOrSkip(`${label} (CLI)`, envVar, async () => {
-    const p = mysql.createPool({ uri: adminUrl, connectTimeout: 3000 });
-    try {
-      await p.query("SELECT 1");
-      return p;
-    } catch (error) {
-      await p.end();
+interface Admin {
+  query(sql: string): Promise<Record<string, unknown>[]>;
+  end(): Promise<void>;
+}
+
+interface DbTarget {
+  label: string;
+  envVar: string;
+  adminUrl: string;
+  kind: "mysql" | "postgres";
+  /** Appended to URLs given to the CLI and the starter file. */
+  urlSuffix: string;
+}
+
+const dbTargets: DbTarget[] = [
+  {
+    label: "MySQL 8",
+    envVar: "PERMLY_MYSQL_URL",
+    adminUrl: process.env.PERMLY_MYSQL_URL ?? "mysql://root:permly@127.0.0.1:33061/permly",
+    kind: "mysql",
+    urlSuffix: "",
+  },
+  {
+    label: "MariaDB 11",
+    envVar: "PERMLY_MARIADB_URL",
+    adminUrl: process.env.PERMLY_MARIADB_URL ?? "mysql://root:permly@127.0.0.1:33062/permly",
+    kind: "mysql",
+    urlSuffix: "",
+  },
+  {
+    label: "Postgres 13",
+    envVar: "PERMLY_PG13_URL",
+    adminUrl: process.env.PERMLY_PG13_URL ?? "postgres://postgres:permly@127.0.0.1:54313/permly",
+    kind: "postgres",
+    urlSuffix: "",
+  },
+  {
+    label: "Postgres 17 (SSL)",
+    envVar: "PERMLY_PG17_URL",
+    adminUrl: process.env.PERMLY_PG17_URL ?? "postgres://postgres:permly@127.0.0.1:54317/permly",
+    kind: "postgres",
+    // Self-signed test certificate: encrypt, but don't verify it.
+    urlSuffix: "?sslmode=no-verify",
+  },
+];
+
+async function openAdmin(target: DbTarget): Promise<Admin> {
+  if (target.kind === "mysql") {
+    const pool = mysql.createPool({ uri: target.adminUrl, connectTimeout: 3000 });
+    const admin: Admin = {
+      query: async (sql) => (await pool.query(sql))[0] as Record<string, unknown>[],
+      end: () => pool.end(),
+    };
+    await admin.query("SELECT 1").catch(async (error: unknown) => {
+      await pool.end();
       throw error;
-    }
+    });
+    return admin;
+  }
+  const pool = new pg.Pool({
+    connectionString: target.adminUrl + target.urlSuffix,
+    connectionTimeoutMillis: 3000,
   });
+  const admin: Admin = {
+    query: async (sql) => (await pool.query(sql)).rows as Record<string, unknown>[],
+    end: () => pool.end(),
+  };
+  await admin.query("SELECT 1").catch(async (error: unknown) => {
+    await pool.end();
+    throw error;
+  });
+  return admin;
+}
 
-  describe.skipIf(!pool)(`migrate against ${label}`, () => {
-    const admin = pool as Pool;
+const TABLES = ["roles", "permissions", "role_permissions", "user_roles", "user_permissions"];
+
+for (const target of dbTargets) {
+  const admin = await connectOrSkip(`${target.label} (CLI)`, target.envVar, () =>
+    openAdmin(target),
+  );
+
+  describe.skipIf(!admin)(`against ${target.label}`, () => {
+    const db = admin as Admin;
+    const { kind, urlSuffix } = target;
     const PASSWORD = "s3cret_Pw_42";
     const PREFIX = "cli_test_";
-    const database = new URL(adminUrl).pathname.slice(1);
-    const { hostname, port } = new URL(adminUrl);
-    const url = `mysql://permly_cli:${PASSWORD}@${hostname}:${port}/${database}`;
-    const tables = ["roles", "permissions", "role_permissions", "user_roles", "user_permissions"];
+    const adminUrl = new URL(target.adminUrl);
+    const database = adminUrl.pathname.slice(1);
+    const hostPort = `${adminUrl.hostname}:${adminUrl.port}`;
+    const scheme = kind === "mysql" ? "mysql" : "postgres";
+    const url = `${scheme}://permly_cli:${PASSWORD}@${hostPort}/${database}${urlSuffix}`;
+    const q = (name: string) => (kind === "mysql" ? `\`${name}\`` : `"${name}"`);
 
-    const dropTables = async () => {
-      for (const table of [...tables].reverse()) {
-        await admin.query(`DROP TABLE IF EXISTS \`${PREFIX}${table}\``);
+    const dropTables = async (prefix: string, schema = "public") => {
+      for (const table of [...TABLES].reverse()) {
+        const name = kind === "mysql" ? q(prefix + table) : `${q(schema)}.${q(prefix + table)}`;
+        await db.query(`DROP TABLE IF EXISTS ${name}`);
       }
     };
-    const existingTables = async () => {
-      const [rows] = await admin.query(
+    const tablesLike = async (prefix: string, schema = "public") => {
+      const where = kind === "mysql" ? "table_schema = DATABASE()" : `table_schema = '${schema}'`;
+      const rows = await db.query(
         `SELECT table_name AS name FROM information_schema.tables
-         WHERE table_schema = DATABASE() AND table_name LIKE 'cli\\_test\\_%'`,
+         WHERE ${where} AND table_name LIKE '${prefix.replace(/_/g, "\\_")}%'`,
       );
-      return (rows as { name: string }[]).map((row) => row.name).sort();
+      return rows.map((row) => String(row.name)).sort();
+    };
+    const dropUser = async () => {
+      if (kind === "mysql") {
+        await db.query(`DROP USER IF EXISTS 'permly_cli'@'%'`);
+      } else {
+        await db.query(`DO $$ BEGIN
+          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'permly_cli') THEN
+            DROP OWNED BY permly_cli; DROP ROLE permly_cli;
+          END IF; END $$`);
+      }
     };
 
     beforeAll(async () => {
       // A dedicated user whose password we can look for in the output.
-      await admin.query(`DROP USER IF EXISTS 'permly_cli'@'%'`);
-      await admin.query(`CREATE USER 'permly_cli'@'%' IDENTIFIED BY '${PASSWORD}'`);
-      await admin.query(`GRANT ALL ON \`${database}\`.* TO 'permly_cli'@'%'`);
-      await dropTables();
+      await dropTables(PREFIX);
+      await dropTables("restart_test_");
+      await dropUser();
+      if (kind === "mysql") {
+        await db.query(`CREATE USER 'permly_cli'@'%' IDENTIFIED BY '${PASSWORD}'`);
+        await db.query(`GRANT ALL ON \`${database}\`.* TO 'permly_cli'@'%'`);
+      } else {
+        await db.query(`CREATE ROLE permly_cli LOGIN PASSWORD '${PASSWORD}'`);
+        await db.query(`GRANT USAGE, CREATE ON SCHEMA public TO permly_cli`);
+      }
     });
 
     afterAll(async () => {
-      await dropTables();
-      await admin.query(`DROP USER IF EXISTS 'permly_cli'@'%'`);
-      await admin.end();
+      await dropTables(PREFIX);
+      await dropTables("restart_test_");
+      await dropUser();
+      await db.end();
     });
 
+    const driverOption = kind === "mysql" ? { mysql2: "real" as const } : { pg: "real" as const };
     const migrate = (args: string[], options: Parameters<typeof cli>[2] = {}) =>
-      cli(["migrate", "--prefix", PREFIX, ...args], project({ mysql2: "real" }), options);
+      cli(["migrate", "--prefix", PREFIX, ...args], project(driverOption), options);
 
     it("asks first, and creates nothing when the answer is no", async () => {
       const result = await migrate(["--url", url], { input: ["n"] });
       expect(result.code).toBe(1);
-      expect(result.stdout).toContain(`mysql://permly_cli@${hostname}:${port}/${database}`);
+      expect(result.stdout).toContain(`${scheme}://permly_cli@${hostPort}/${database}`);
       expect(result.stderr).toContain("Cancelled.");
-      expect(await existingTables()).toEqual([]);
+      expect(await tablesLike(PREFIX)).toEqual([]);
     });
 
     it("creates the tables, then is a no-op the second time", async () => {
       const first = await migrate(["--url", url], { input: ["y"] });
-      expect(first.code).toBe(0);
-      for (const table of tables)
+      expect(first.code, first.all).toBe(0);
+      for (const table of TABLES) {
         expect(first.stdout).toMatch(new RegExp(`created\\s+${PREFIX}${table}\\b`));
-      expect(await existingTables()).toEqual(tables.map((t) => PREFIX + t).sort());
+      }
+      expect(await tablesLike(PREFIX)).toEqual(TABLES.map((t) => PREFIX + t).sort());
 
       // DATABASE_URL instead of --url, --yes instead of a prompt.
       const second = await migrate(["--yes"], { env: { DATABASE_URL: url } });
       expect(second.code).toBe(0);
-      for (const table of tables)
+      for (const table of TABLES) {
         expect(second.stdout).toMatch(new RegExp(`exists\\s+${PREFIX}${table}\\b`));
+      }
       expect(second.stdout).not.toContain("created");
 
       for (const result of [first, second]) expect(result.all).not.toContain(PASSWORD);
     });
 
     it("keeps existing data (never drops or alters)", async () => {
-      await admin.query(`INSERT INTO \`${PREFIX}roles\` (name) VALUES ('kept')`);
+      await db.query(`INSERT INTO ${q(PREFIX + "roles")} (name) VALUES ('kept')`);
       expect((await migrate(["--yes", "--url", url])).code).toBe(0);
-      const [rows] = await admin.query(`SELECT name FROM \`${PREFIX}roles\``);
-      expect(rows).toEqual([{ name: "kept" }]);
+      expect(await db.query(`SELECT name FROM ${q(PREFIX + "roles")}`)).toEqual([{ name: "kept" }]);
     });
 
     it("never prints the password, even on authentication errors", async () => {
@@ -447,6 +637,65 @@ for (const [label, envVar, adminUrl] of targets) {
       expect(result.stderr).toContain("Could not connect");
       expect(result.all).not.toContain(wrong);
       expect(result.all).not.toContain(PASSWORD);
+    });
+
+    if (kind === "postgres") {
+      it("requires an existing schema, then creates the tables inside it", async () => {
+        await db.query(`DROP SCHEMA IF EXISTS tenant_x CASCADE`);
+        const missing = await migrate(["--yes", "--schema", "tenant_x", "--url", url]);
+        expect(missing.code).toBe(1);
+        expect(missing.stderr).toContain(`Schema "tenant_x" does not exist`);
+        expect(missing.stderr).toContain(`CREATE SCHEMA "tenant_x";`);
+
+        await db.query(`CREATE SCHEMA tenant_x AUTHORIZATION permly_cli`);
+        try {
+          const created = await migrate(["--yes", "--schema", "tenant_x", "--url", url]);
+          expect(created.code, created.all).toBe(0);
+          expect(created.stdout).toContain("Schema    tenant_x");
+          expect(await tablesLike(PREFIX, "tenant_x")).toEqual(
+            TABLES.map((t) => PREFIX + t).sort(),
+          );
+        } finally {
+          await db.query(`DROP SCHEMA tenant_x CASCADE`);
+        }
+      });
+    }
+
+    it("setupPermissions() keeps a revoked permission revoked after a restart", async () => {
+      const dir = project({ type: "module", permly: true, ...driverOption });
+      const env = { DATABASE_URL: url };
+      const flags = ["--db", kind, "--prefix", "restart_test_"];
+      expect((await cli(["init", ...flags], dir)).code).toBe(0);
+      expect((await cli(["migrate", "--yes", ...flags], dir, { env })).code).toBe(0);
+
+      // Each script is a separate process, i.e. an app start with an empty cache.
+      const start = (body: string) => {
+        writeFileSync(
+          join(dir, "start.mjs"),
+          `import { perms, setupPermissions } from "./src/permly.js";
+           await setupPermissions();
+           ${body}
+           process.exit(0);`,
+        );
+        const result = spawnSync(process.execPath, ["start.mjs"], {
+          cwd: dir,
+          env: { ...process.env, ...env },
+          encoding: "utf8",
+        });
+        expect(result.status, result.stderr).toBe(0);
+        return JSON.parse(result.stdout) as Record<string, string[]>;
+      };
+      const show = `console.log(JSON.stringify({
+        editor: await perms.role("editor").getPermissions(),
+        admin: await perms.role("admin").getPermissions(),
+      }));`;
+
+      // First start: defaults granted. Then an admin revokes one.
+      expect(start(show)).toEqual({ editor: ["posts.create", "posts.edit.own"], admin: ["*"] });
+      start(`await perms.role("editor").revokePermission("posts.create"); console.log("{}");`);
+
+      // Restart: the revoke survives, nothing else changes.
+      expect(start(show)).toEqual({ editor: ["posts.edit.own"], admin: ["*"] });
     });
   });
 }

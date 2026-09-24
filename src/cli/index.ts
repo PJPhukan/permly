@@ -14,9 +14,10 @@ ${out.bold("Usage")}
   npx permly migrate    Create the tables in DATABASE_URL (skips existing tables)
 
 ${out.bold("Options")}
-  --db <name>        Database: mysql (postgres and mongodb coming soon)
+  --db <name>        Database: mysql or postgres (mongodb coming soon)
   --prefix <prefix>  Table prefix (default: perm_)
   --out <dir>        init: folder for the SQL file (default: migrations)
+  --schema <name>    Postgres schema for the tables (default: public)
   --ts, --js         init: language of the starter file (default: detected)
   --esm, --cjs       init: module format of a JavaScript starter file (default: detected)
   --force            init: overwrite existing files

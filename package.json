@@ -27,6 +27,9 @@
       ],
       "express": [
         "./dist/express.d.ts"
+      ],
+      "postgres": [
+        "./dist/postgres.d.ts"
       ]
     }
   },
@@ -61,6 +64,16 @@
         "default": "./dist/mysql.cjs"
       }
     },
+    "./postgres": {
+      "import": {
+        "types": "./dist/postgres.d.ts",
+        "default": "./dist/postgres.js"
+      },
+      "require": {
+        "types": "./dist/postgres.d.cts",
+        "default": "./dist/postgres.cjs"
+      }
+    },
     "./express": {
       "import": {
         "types": "./dist/express.d.ts",
@@ -89,13 +102,17 @@
   },
   "peerDependencies": {
     "express": ">=4.17.0",
-    "mysql2": ">=3.0.0"
+    "mysql2": ">=3.0.0",
+    "pg": ">=8.0.0"
   },
   "peerDependenciesMeta": {
     "express": {
       "optional": true
     },
     "mysql2": {
+      "optional": true
+    },
+    "pg": {
       "optional": true
     }
   },
@@ -108,18 +125,22 @@
     "access-control",
     "express",
     "mysql",
-    "mariadb"
+    "mariadb",
+    "postgres",
+    "postgresql"
   ],
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.2",
+    "@types/pg": "^8.23.1",
     "eslint": "^10.11.0",
     "eslint-config-prettier": "^10.1.8",
     "express4": "npm:express@^4.22.3",
     "express5": "npm:express@^5.2.1",
     "globals": "^17.12.0",
     "mysql2": "^3.24.4",
+    "pg": "^8.23.0",
     "prettier": "^3.9.9",
     "tsup": "^8.5.1",
     "typescript": "~5.9",

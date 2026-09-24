@@ -4,15 +4,15 @@ Simple roles & permissions for Node.js. Zero dependencies.
 
 > **Draft.** The full README (API reference, caching, FAQ) comes before the first release.
 
-## Quick start (MySQL / MariaDB)
+## Quick start (MySQL, MariaDB or Postgres)
 
 ```sh
-npm install permly mysql2
+npm install permly mysql2   # or: npm install permly pg
 npx permly init
 ```
 
-`init` asks three questions (database, table prefix, migrations folder), detects TypeScript
-and ES modules vs CommonJS, and creates:
+`init` asks a few questions (database, table prefix, migrations folder, and the schema for
+Postgres), detects TypeScript and ES modules vs CommonJS, and creates:
 
 - `migrations/<timestamp>_permly_init.sql`, the tables (safe to run more than once)
 - `src/permly.js` (or `.ts`), your permissions setup, ready to import
@@ -21,12 +21,15 @@ Create the tables, then use it:
 
 ```sh
 DATABASE_URL=mysql://user:password@localhost:3306/mydb npx permly migrate
+# or DATABASE_URL=postgres://user:password@localhost:5432/mydb npx permly migrate
 ```
 
 ```js
 import { perms, setupPermissions } from "./src/permly.js";
 
-await setupPermissions(); // once at startup: creates roles/permissions, grants defaults
+// Once at startup. Creates missing roles/permissions; the default grants in the file are
+// only applied the first time, so permission changes made later survive restarts.
+await setupPermissions();
 
 await perms.user(1).assignRole("editor");
 await perms.user(1).can("posts.create"); // true
@@ -42,8 +45,9 @@ Edit the roles and permissions in `src/permly.js` to fit your app.
 npx permly init       Create the SQL file and the starter src/permly.(js|ts)
 npx permly migrate    Create the tables in DATABASE_URL (never changes existing tables)
 
---db mysql            Database (postgres and mongodb coming soon)
+--db mysql|postgres   Database (mongodb coming soon)
 --prefix <prefix>     Table prefix, default perm_
+--schema <name>       Postgres schema, default public (must already exist)
 --out <dir>           init: folder for the SQL file, default migrations
 --ts / --js           init: starter file language (default: detected)
 --esm / --cjs         init: module format for JavaScript (default: detected)
@@ -52,9 +56,10 @@ npx permly migrate    Create the tables in DATABASE_URL (never changes existing 
 --yes                 migrate: skip the confirmation
 ```
 
-In CI (no terminal) nothing is ever prompted: use `npx permly init --db mysql` and
-`npx permly migrate --yes`. `migrate` shows the target database but never prints the
-password. It uses the `mysql2` installed in your project.
+In CI (no terminal) nothing is ever prompted: use `npx permly init --db mysql` (or
+`--db postgres`) and `npx permly migrate --yes`. `migrate` accepts `mysql://`, `mariadb://`,
+`postgres://` and `postgresql://` URLs, shows the target database but never prints the
+password, and uses the driver installed in your project (`mysql2` or `pg`).
 
 > **Using Prisma?** Don't run permly's SQL alongside `prisma migrate`: Prisma sees tables it
 > doesn't manage as drift and may offer to reset the database. Proper Prisma support comes
@@ -223,3 +228,87 @@ Pass a **pool** from `mysql2/promise`. If you already use the callback API
 - A user's roles and permissions are loaded in a single indexed query and cached in memory for
   60 seconds (`cache: { ttl }`). The cache is per process: on several servers, a change made on
   one server shows up on the others after the TTL.
+
+## Postgres
+
+Tested on Postgres 13 and 17. Uses [`pg`](https://www.npmjs.com/package/pg), which you install
+yourself:
+
+```sh
+npm install permly pg
+```
+
+### 1. Create the tables
+
+`npx permly migrate` with a `postgres://` or `postgresql://` URL (see Quick start), or run the
+SQL yourself from the file `permly init` generated, or from code:
+
+```js
+import { postgresSchema, postgresSchemaStatements } from "permly/postgres";
+
+console.log(postgresSchema()); // or postgresSchema("myapp_perm_", "auth")
+```
+
+The tables use `INT GENERATED ALWAYS AS IDENTITY` ids, foreign keys with `ON DELETE CASCADE`,
+and ordinary (case-sensitive) text columns. permly never adds a foreign key to your users
+table.
+
+### 2. Connect
+
+```js
+import pg from "pg";
+import { createPermissions } from "permly";
+import { postgresAdapter } from "permly/postgres";
+
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+
+const perms = createPermissions({
+  adapter: postgresAdapter(pool), // or postgresAdapter(pool, { prefix: "app_", schema: "auth" })
+  permissions: ["posts.create", "posts.edit", "posts.delete"],
+  roles: ["admin", "editor"],
+});
+
+await perms.sync();
+```
+
+Pass a `pg` **Pool**, not a single `Client`: transactions need their own connection from the
+pool. Any pg-compatible pool works, e.g. `@neondatabase/serverless`.
+
+### Schema option
+
+By default the tables live in `public`. With `schema: "auth"` (and `npx permly migrate
+--schema auth`) they live in `auth` instead. The schema must already exist
+(`CREATE SCHEMA auth;`); permly doesn't create it.
+
+permly always writes schema-qualified, quoted names (`"auth"."perm_roles"`), so it never
+depends on the connection's `search_path`. Because the name is quoted it is case-sensitive:
+`schema: "Auth"` and `schema: "auth"` are different schemas.
+
+### PgBouncer and serverless poolers
+
+permly works behind PgBouncer in **transaction mode** (Supabase's pooler on port 6543, Neon's
+pooled connection string, RDS Proxy): it only sends unnamed statements (no named prepared
+statements), and its locks and settings are transaction-scoped (`pg_advisory_xact_lock`,
+`SET LOCAL`), so nothing leaks to the next client on the same server connection.
+
+Run `npx permly migrate` against the direct (non-pooled) connection string if your provider
+recommends that for schema changes.
+
+### SSL (Supabase, Neon, RDS, ...)
+
+SSL is handled by `pg`, so configure it the usual way: `?sslmode=require` in the URL, or
+`new pg.Pool({ connectionString, ssl: { ca } })` with your provider's CA certificate. If the
+server uses a certificate your machine doesn't trust and you accept that risk,
+`?sslmode=no-verify` encrypts without verifying. The same URL works for `npx permly migrate`.
+
+### Notes
+
+- `syncRoles()` takes a transaction-level advisory lock per user and `syncPermissions()`
+  locks the role's row, so concurrent calls are safe and never leave a mix of two lists.
+  Waiting for a lock gives up after 10 seconds with a `PermissionsError` (`code:
+"LOCK_TIMEOUT"`). Deadlocks and serialization failures are retried once.
+- Lists of any size are sent as one array parameter (`= ANY($1::text[])`).
+- If the tables or the schema are missing, errors say so and show the `npx permly migrate`
+  command to fix it.
+- TypeScript: the generated `src/permly.ts` uses `import pg from "pg"`, which needs
+  `esModuleInterop` (on by default in new projects) unless you use `"module": "NodeNext"`.

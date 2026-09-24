@@ -34,6 +34,19 @@ export function validatePrefix(prefix: unknown): string {
   return prefix;
 }
 
+export const DEFAULT_SCHEMA = "public";
+
+/** A Postgres schema name: same rules as the prefix, non-empty, at most 63 characters. */
+export function validateSchema(schema: unknown): string {
+  if (schema === undefined) return DEFAULT_SCHEMA;
+  if (typeof schema !== "string" || !/^[A-Za-z0-9_]{1,63}$/.test(schema)) {
+    throw new InvalidInputError(
+      `Schema must be 1-63 letters, numbers or "_", got ${JSON.stringify(schema)}.`,
+    );
+  }
+  return schema;
+}
+
 /** Quoted table names. `quote` wraps an already-validated identifier (backticks or double quotes). */
 export function tableNames(prefix: string, quote: (name: string) => string): TableNames {
   return {

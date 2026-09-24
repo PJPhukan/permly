@@ -30,3 +30,64 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
+
+  # alpine images: smaller, and they avoid a damaged debian layer seen after a disk-full event.
+  postgres13:
+    image: postgres:13-alpine
+    environment:
+      POSTGRES_PASSWORD: permly
+      POSTGRES_DB: permly
+    ports:
+      - "127.0.0.1:54313:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "permly"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # Generates a fresh self-signed certificate on every start, into a Docker volume, so no
+  # private key ever lives in the repo. Test only.
+  pg-ssl-cert:
+    image: alpine/openssl
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -subj /CN=localhost
+        -keyout /ssl/server.key -out /ssl/server.crt 2>/dev/null &&
+        echo "test certificate generated"
+    volumes:
+      - pg-ssl:/ssl
+
+  # SSL on (like Supabase, Neon, RDS), with the certificate generated above.
+  # Postgres requires the key to be owned by it with mode 0600, so it is copied first.
+  postgres17:
+    image: postgres:17-alpine
+    depends_on:
+      pg-ssl-cert:
+        condition: service_completed_successfully
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        install -o postgres -m 600 /ssl/server.key /tmp/server.key &&
+        install -o postgres -m 644 /ssl/server.crt /tmp/server.crt &&
+        exec docker-entrypoint.sh postgres -c ssl=on
+        -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key
+    volumes:
+      - pg-ssl:/ssl:ro
+    environment:
+      POSTGRES_PASSWORD: permly
+      POSTGRES_DB: permly
+    ports:
+      - "127.0.0.1:54317:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "permly"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  pg-ssl:

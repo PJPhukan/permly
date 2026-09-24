@@ -14,6 +14,7 @@ export interface Flags {
   db: string | undefined;
   prefix: string | undefined;
   out: string | undefined;
+  schema: string | undefined;
   url: string | undefined;
   ts: boolean;
   js: boolean;
@@ -26,7 +27,13 @@ export interface Flags {
 }
 
 export const DATABASES = ["mysql", "postgres", "mongodb"] as const;
-export const SUPPORTED_DATABASES = ["mysql"];
+export const SUPPORTED_DATABASES = ["mysql", "postgres"];
+
+const ALIASES: Record<string, string> = {
+  mariadb: "mysql",
+  postgresql: "postgres",
+  pg: "postgres",
+};
 
 export function parseCommandLine(argv: string[]): { command: string | undefined; flags: Flags } {
   let parsed;
@@ -39,6 +46,7 @@ export function parseCommandLine(argv: string[]): { command: string | undefined;
         db: { type: "string" },
         prefix: { type: "string" },
         out: { type: "string" },
+        schema: { type: "string" },
         url: { type: "string" },
         ts: { type: "boolean", default: false },
         js: { type: "boolean", default: false },
@@ -68,6 +76,7 @@ export function parseCommandLine(argv: string[]): { command: string | undefined;
       db: values.db,
       prefix: values.prefix,
       out: values.out,
+      schema: values.schema,
       url: values.url,
       ts: values.ts,
       js: values.js,
@@ -82,8 +91,9 @@ export function parseCommandLine(argv: string[]): { command: string | undefined;
 }
 
 /** Validates a --db value (or a prompt answer). */
-export function checkDatabase(value: string): string {
-  const db = value.trim().toLowerCase();
+export function checkDatabase(value: string): "mysql" | "postgres" {
+  const input = value.trim().toLowerCase();
+  const db = ALIASES[input] ?? input;
   if (!(DATABASES as readonly string[]).includes(db)) {
     throw new UsageError(`Unknown database "${value}". Use one of: ${DATABASES.join(", ")}.`);
   }
@@ -92,5 +102,5 @@ export function checkDatabase(value: string): string {
       `${db} support is coming soon. For now, permly init supports: ${SUPPORTED_DATABASES.join(", ")}.`,
     );
   }
-  return db;
+  return db as "mysql" | "postgres";
 }
