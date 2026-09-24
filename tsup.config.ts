@@ -17,6 +17,7 @@ export default defineConfig([
       memory: "src/adapters/memory.ts",
       mysql: "src/adapters/mysql.ts",
       postgres: "src/adapters/postgres.ts",
+      mongodb: "src/adapters/mongodb.ts",
       express: "src/express/index.ts",
     },
     format: ["cjs", "esm"],

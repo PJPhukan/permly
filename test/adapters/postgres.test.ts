@@ -4,8 +4,8 @@ import {
   postgresAdapter,
   postgresSchema,
   postgresSchemaStatements,
-  userLockKey,
 } from "../../src/adapters/postgres";
+import { userLockKey } from "../../src/adapters/postgres-lock";
 import { createPermissions } from "../../src/core/create-permissions";
 import { InvalidInputError, isPermissionsError } from "../../src/core/errors";
 import { runAdapterContract } from "./adapter-contract";

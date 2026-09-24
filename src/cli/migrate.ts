@@ -1,5 +1,6 @@
+import { mongodbSetup, type MongoCollectionSpec } from "../adapters/mongodb-setup";
 import { mysqlSchemaStatements } from "../adapters/mysql-schema";
-import { postgresSchemaPlan, type TablePlan } from "../adapters/postgres-schema";
+import { postgresSchemaPlan } from "../adapters/postgres-schema";
 import {
   DEFAULT_PREFIX,
   DEFAULT_SCHEMA,
@@ -14,19 +15,10 @@ import { DRIVERS, type Database } from "./templates";
 
 const TABLES = ["roles", "permissions", "role_permissions", "user_roles", "user_permissions"];
 
-/**
- * The password (raw and decoded) from a database URL, so error output can be scrubbed of it
- * even when it appears inside a driver's error message.
- */
-export function urlSecrets(raw: string | undefined): string[] {
-  if (!raw) return [];
-  try {
-    const { password } = new URL(raw);
-    return [...new Set([password, safeDecode(password)])].filter((secret) => secret.length > 0);
-  } catch {
-    return [];
-  }
-}
+// scheme://user:password@hosts/path?query, for every scheme we accept. Parsed by hand because
+// MongoDB URLs can list several hosts (h1:27017,h2:27017), which WHATWG URL rejects.
+const URL_PATTERN =
+  /^([a-z][a-z0-9+.-]*):\/\/(?:([^:@/?#]*)(?::([^@/?#]*))?@)?([^/?#]*)(?:\/([^?#]*))?/i;
 
 function safeDecode(value: string): string {
   try {
@@ -36,11 +28,28 @@ function safeDecode(value: string): string {
   }
 }
 
+/**
+ * The password (raw and decoded) from a database URL, so error output can be scrubbed of it
+ * even when it appears inside a driver's error message.
+ */
+export function urlSecrets(raw: string | undefined): string[] {
+  const password = raw ? URL_PATTERN.exec(raw)?.[3] : undefined;
+  if (!password) return [];
+  return [...new Set([password, safeDecode(password)])].filter((secret) => secret.length > 0);
+}
+
+/** One table (SQL) or collection (MongoDB) and how to create it. */
+interface Step {
+  name: string;
+}
+
 /** What migrate needs from a database connection. */
-interface Session {
-  /** Which of these (unquoted) table names already exist. */
-  existingTables(names: string[]): Promise<Set<string>>;
-  run(sql: string): Promise<void>;
+interface Session<S extends Step> {
+  steps: S[];
+  /** Which step names already exist. */
+  existing(): Promise<Set<string>>;
+  /** Creates what's missing for one step; returns a note for the report, if any. */
+  apply(step: S): Promise<string | undefined>;
   close(): Promise<void>;
 }
 
@@ -49,7 +58,7 @@ export async function migrate(flags: Flags, prompter: Prompter | undefined): Pro
   if (!rawUrl) {
     throw new UsageError(
       "No database URL. Set DATABASE_URL or pass --url, e.g. " +
-        `${DRIVERS.mysql.urlExample} or ${DRIVERS.postgres.urlExample}`,
+        `${DRIVERS.mysql.urlExample}, ${DRIVERS.postgres.urlExample} or ${DRIVERS.mongodb.urlExample}`,
     );
   }
   const target = parseUrl(rawUrl);
@@ -61,42 +70,46 @@ export async function migrate(flags: Flags, prompter: Prompter | undefined): Pro
   }
   const prefix = toUsage(() => validatePrefix(flags.prefix ?? DEFAULT_PREFIX));
   const schema = toUsage(() => validateSchema(flags.schema ?? DEFAULT_SCHEMA));
-  const plan: TablePlan[] =
-    target.db === "postgres"
-      ? postgresSchemaPlan(prefix, schema)
-      : mysqlSchemaStatements(prefix).map((statement, i) => ({
-          table: prefix + TABLES[i],
-          statements: [statement],
-        }));
+  const mongo = target.db === "mongodb";
+  const names = mongo
+    ? mongodbSetup(prefix).map((spec) => spec.name)
+    : TABLES.map((table) => prefix + table);
 
   print(out.bold("permly migrate"));
   print();
-  print(`  Database  ${target.display}`);
-  if (target.db === "postgres") print(`  Schema    ${schema}`);
-  print(`  Tables    ${plan.map((entry) => entry.table).join(", ")}`);
-  print(out.dim("  Creates missing tables only. Existing tables are never changed or dropped."));
+  print(`  Database     ${target.display}`);
+  if (target.db === "postgres") print(`  Schema       ${schema}`);
+  print(`  ${mongo ? "Collections" : "Tables     "}  ${names.join(", ")}`);
+  print(
+    out.dim(
+      `  Creates missing ${mongo ? "collections and indexes" : "tables"} only. Existing ones are never changed or dropped.`,
+    ),
+  );
   print();
 
   if (!flags.yes) {
     if (!prompter) {
       throw new UsageError("Pass --yes to confirm when running without a terminal (e.g. in CI).");
     }
-    if (!(await prompter.confirm("Create the tables?", false))) throw new CancelledError();
+    const what = mongo ? "collections and indexes" : "tables";
+    if (!(await prompter.confirm(`Create the ${what}?`, false))) throw new CancelledError();
   }
 
-  const session =
+  const session: Session<Step> =
     target.db === "postgres"
-      ? await openPostgres(rawUrl, target.display, schema)
-      : await openMysql(rawUrl, target.display);
+      ? await openPostgres(rawUrl, target.display, prefix, schema)
+      : target.db === "mongodb"
+        ? await openMongo(rawUrl, target.display, prefix)
+        : await openMysql(rawUrl, target.display, prefix);
 
   try {
-    const existing = await session.existingTables(plan.map((entry) => entry.table));
-    for (const { table, statements } of plan) {
-      for (const statement of statements) await session.run(statement);
+    const existing = await session.existing();
+    for (const step of session.steps) {
+      const note = await session.apply(step);
       print(
-        existing.has(table)
-          ? `  ${out.dim("exists")}   ${table} ${out.dim("(left unchanged)")}`
-          : `  ${out.green("created")}  ${table}`,
+        existing.has(step.name)
+          ? `  ${out.dim("exists")}   ${step.name} ${out.dim(note ? `(${note})` : "(left unchanged)")}`
+          : `  ${out.green("created")}  ${step.name}`,
       );
     }
   } finally {
@@ -111,15 +124,20 @@ export async function migrate(flags: Flags, prompter: Prompter | undefined): Pro
 
 // --- drivers: always the ones installed in the user's project ---
 
-function loadDriver<T>(db: Database, module: string): T {
-  try {
-    return requireFromProject(process.cwd())(module) as T;
-  } catch {
-    const { driver } = DRIVERS[db];
-    throw new Error(
-      `${driver} is not installed in this project. Install it with: npm install ${driver}`,
-    );
+function loadDriver<T>(db: Database, modules: string[]): T {
+  const load = requireFromProject(process.cwd());
+  for (const module of modules) {
+    try {
+      return load(module) as T;
+    } catch {
+      // try the next one
+    }
   }
+  const { driver } = DRIVERS[db];
+  const alternative = db === "mongodb" ? " (or mongoose)" : "";
+  throw new Error(
+    `${driver}${alternative} is not installed in this project. Install it with: npm install ${driver}`,
+  );
 }
 
 function connectError(display: string, error: unknown): Error {
@@ -130,14 +148,18 @@ function connectError(display: string, error: unknown): Error {
   );
 }
 
-async function openMysql(url: string, display: string): Promise<Session> {
+interface SqlStep extends Step {
+  statements: string[];
+}
+
+async function openMysql(url: string, display: string, prefix: string): Promise<Session<SqlStep>> {
   interface Connection {
     query(sql: string, values?: unknown[]): Promise<[unknown, unknown]>;
     end(): Promise<void>;
   }
   const mysql = loadDriver<{
     createConnection(options: { uri: string; connectTimeout: number }): Promise<Connection>;
-  }>("mysql", "mysql2/promise");
+  }>("mysql", ["mysql2/promise"]);
 
   let connection: Connection;
   try {
@@ -145,8 +167,14 @@ async function openMysql(url: string, display: string): Promise<Session> {
   } catch (error) {
     throw connectError(display, error);
   }
+  const steps = mysqlSchemaStatements(prefix).map((statement, i) => ({
+    name: prefix + TABLES[i],
+    statements: [statement],
+  }));
   return {
-    async existingTables(names) {
+    steps,
+    async existing() {
+      const names = steps.map((step) => step.name);
       const [rows] = await connection.query(
         `SELECT table_name AS name FROM information_schema.tables
          WHERE table_schema = DATABASE() AND table_name IN (${names.map(() => "?").join(", ")})`,
@@ -154,14 +182,20 @@ async function openMysql(url: string, display: string): Promise<Session> {
       );
       return new Set((rows as { name: string }[]).map((row) => row.name));
     },
-    async run(sql) {
-      await connection.query(sql);
+    async apply(step) {
+      for (const statement of step.statements) await connection.query(statement);
+      return undefined;
     },
     close: () => connection.end(),
   };
 }
 
-async function openPostgres(url: string, display: string, schema: string): Promise<Session> {
+async function openPostgres(
+  url: string,
+  display: string,
+  prefix: string,
+  schema: string,
+): Promise<Session<SqlStep>> {
   interface Client {
     connect(): Promise<void>;
     query(text: string, values?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
@@ -169,7 +203,7 @@ async function openPostgres(url: string, display: string, schema: string): Promi
   }
   const pg = loadDriver<{
     Client: new (config: { connectionString: string; connectionTimeoutMillis: number }) => Client;
-  }>("postgres", "pg");
+  }>("postgres", ["pg"]);
 
   const client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 10_000 });
   try {
@@ -187,19 +221,84 @@ async function openPostgres(url: string, display: string, schema: string): Promi
     );
   }
 
+  const steps = postgresSchemaPlan(prefix, schema).map((plan) => ({
+    name: plan.table,
+    statements: plan.statements,
+  }));
   return {
-    async existingTables(names) {
+    steps,
+    async existing() {
       const result = await client.query(
         `SELECT table_name AS name FROM information_schema.tables
          WHERE table_schema = $1 AND table_name = ANY($2::text[])`,
-        [schema, names],
+        [schema, steps.map((step) => step.name)],
       );
       return new Set(result.rows.map((row) => String(row.name)));
     },
-    async run(sql) {
-      await client.query(sql);
+    async apply(step) {
+      for (const statement of step.statements) await client.query(statement);
+      return undefined;
     },
     close: () => client.end(),
+  };
+}
+
+async function openMongo(
+  url: string,
+  display: string,
+  prefix: string,
+): Promise<Session<MongoCollectionSpec>> {
+  interface Collection {
+    listIndexes(): { toArray(): Promise<{ name: string }[]> };
+    createIndexes(indexes: unknown[]): Promise<unknown>;
+  }
+  interface Db {
+    listCollections(filter: object, options: object): { toArray(): Promise<{ name: string }[]> };
+    createCollection(name: string): Promise<unknown>;
+    collection(name: string): Collection;
+  }
+  interface Client {
+    connect(): Promise<unknown>;
+    db(): Db;
+    close(): Promise<void>;
+  }
+  type ClientClass = new (url: string, options: object) => Client;
+  // The native driver, or the copy inside mongoose.
+  const driver = loadDriver<{ MongoClient?: ClientClass; mongo?: { MongoClient: ClientClass } }>(
+    "mongodb",
+    ["mongodb", "mongoose"],
+  );
+  const MongoClient = driver.MongoClient ?? driver.mongo?.MongoClient;
+  if (!MongoClient) throw new Error("Could not find MongoClient in mongodb or mongoose.");
+
+  const client = new MongoClient(url, { serverSelectionTimeoutMS: 10_000 });
+  try {
+    await client.connect();
+  } catch (error) {
+    await client.close().catch(() => {});
+    throw connectError(display, error);
+  }
+  const db = client.db();
+
+  return {
+    steps: mongodbSetup(prefix),
+    async existing() {
+      const collections = await db.listCollections({}, { nameOnly: true }).toArray();
+      return new Set(collections.map((collection) => collection.name));
+    },
+    async apply(spec) {
+      await db.createCollection(spec.name).catch((error: unknown) => {
+        if ((error as { code?: unknown }).code !== 48) throw error; // NamespaceExists
+      });
+      const collection = db.collection(spec.name);
+      const before = new Set((await collection.listIndexes().toArray()).map((index) => index.name));
+      await collection.createIndexes(spec.indexes);
+      const added = spec.indexes.filter((index) => !before.has(index.name));
+      return added.length > 0
+        ? `added index ${added.map((index) => index.name).join(", ")}`
+        : undefined;
+    },
+    close: () => client.close(),
   };
 }
 
@@ -216,34 +315,36 @@ const SCHEMES: Record<string, { db: Database; port: string }> = {
   mariadb: { db: "mysql", port: "3306" },
   postgres: { db: "postgres", port: "5432" },
   postgresql: { db: "postgres", port: "5432" },
+  mongodb: { db: "mongodb", port: "27017" },
+  "mongodb+srv": { db: "mongodb", port: "" },
 };
 
 function parseUrl(raw: string): Target {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
+  const match = URL_PATTERN.exec(raw.trim());
+  const examples = `${DRIVERS.mysql.urlExample}, ${DRIVERS.postgres.urlExample} or ${DRIVERS.mongodb.urlExample}`;
+  if (!match || !match[4]) {
     // Deliberately not echoing the value: it may contain a password.
-    throw new UsageError(
-      `The database URL is not valid. Expected e.g. ${DRIVERS.mysql.urlExample} or ${DRIVERS.postgres.urlExample}`,
-    );
+    throw new UsageError(`The database URL is not valid. Expected e.g. ${examples}`);
   }
-  const protocol = url.protocol.replace(/:$/, "");
+  const [, rawScheme = "", user = "", , hosts = "", path = ""] = match;
+  const protocol = rawScheme.toLowerCase();
   const scheme = SCHEMES[protocol];
   if (!scheme) {
     throw new UsageError(
-      `Unsupported URL scheme "${protocol}:". Use mysql://, mariadb://, postgres:// or postgresql://.`,
+      `Unsupported URL scheme "${protocol}:". Use mysql://, mariadb://, postgres://, postgresql://, mongodb:// or mongodb+srv://.`,
     );
   }
-  const database = safeDecode(url.pathname.replace(/^\//, ""));
+  const database = safeDecode(path);
   if (!database) {
     throw new UsageError(
       `The database URL has no database name, e.g. ${DRIVERS[scheme.db].urlExample}`,
     );
   }
-  const user = safeDecode(url.username);
-  const display = `${protocol}://${user ? `${user}@` : ""}${url.hostname}:${url.port || scheme.port}/${database}`;
-  return { db: scheme.db, display };
+  // Show a default port only for single-host URLs that don't give one.
+  const host =
+    !scheme.port || hosts.includes(":") || hosts.includes(",") ? hosts : `${hosts}:${scheme.port}`;
+  const name = safeDecode(user);
+  return { db: scheme.db, display: `${protocol}://${name ? `${name}@` : ""}${host}/${database}` };
 }
 
 function toUsage<T>(validate: () => T): T {

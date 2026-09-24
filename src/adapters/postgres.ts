@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
 import { InvalidInputError, PermissionsError } from "../core/errors";
 import type { PermissionAdapter, UserAccess } from "../core/types";
+import { userLockKey } from "./postgres-lock";
 import { postgresTables } from "./postgres-schema";
 import { retryOnce, validatePrefix, validateSchema } from "./sql-shared";
 
@@ -267,15 +267,6 @@ export function postgresAdapter(
       );
     },
   };
-}
-
-/**
- * The 64-bit advisory lock key for one user's syncRoles, from a hash of schema, prefix and
- * user id. A collision would only make two users' syncs wait for each other.
- */
-export function userLockKey(schema: string, prefix: string, userId: string): string {
-  const digest = createHash("sha1").update(`permly:${schema}.${prefix}:${userId}`).digest();
-  return digest.readBigInt64BE(0).toString();
 }
 
 /** Turns the errors people actually hit during setup into ones that say what to do. */

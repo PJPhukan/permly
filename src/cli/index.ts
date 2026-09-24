@@ -10,13 +10,13 @@ import { Prompter } from "./prompt";
 const HELP = `${out.bold("permly")} - roles & permissions for Node.js
 
 ${out.bold("Usage")}
-  npx permly init       Create the SQL schema file and a starter src/permly.(js|ts)
-  npx permly migrate    Create the tables in DATABASE_URL (skips existing tables)
+  npx permly init       Create the migration file and a starter src/permly.(js|ts)
+  npx permly migrate    Create the tables / collections in DATABASE_URL (skips existing ones)
 
 ${out.bold("Options")}
-  --db <name>        Database: mysql or postgres (mongodb coming soon)
+  --db <name>        Database: mysql, postgres or mongodb
   --prefix <prefix>  Table prefix (default: perm_)
-  --out <dir>        init: folder for the SQL file (default: migrations)
+  --out <dir>        init: folder for the migration file (default: migrations)
   --schema <name>    Postgres schema for the tables (default: public)
   --ts, --js         init: language of the starter file (default: detected)
   --esm, --cjs       init: module format of a JavaScript starter file (default: detected)

@@ -30,6 +30,9 @@
       ],
       "postgres": [
         "./dist/postgres.d.ts"
+      ],
+      "mongodb": [
+        "./dist/mongodb.d.ts"
       ]
     }
   },
@@ -74,6 +77,16 @@
         "default": "./dist/postgres.cjs"
       }
     },
+    "./mongodb": {
+      "import": {
+        "types": "./dist/mongodb.d.ts",
+        "default": "./dist/mongodb.js"
+      },
+      "require": {
+        "types": "./dist/mongodb.d.cts",
+        "default": "./dist/mongodb.cjs"
+      }
+    },
     "./express": {
       "import": {
         "types": "./dist/express.d.ts",
@@ -103,7 +116,9 @@
   "peerDependencies": {
     "express": ">=4.17.0",
     "mysql2": ">=3.0.0",
-    "pg": ">=8.0.0"
+    "pg": ">=8.0.0",
+    "mongodb": ">=6.0.0",
+    "mongoose": ">=8.0.0"
   },
   "peerDependenciesMeta": {
     "express": {
@@ -113,6 +128,12 @@
       "optional": true
     },
     "pg": {
+      "optional": true
+    },
+    "mongodb": {
+      "optional": true
+    },
+    "mongoose": {
       "optional": true
     }
   },
@@ -127,7 +148,9 @@
     "mysql",
     "mariadb",
     "postgres",
-    "postgresql"
+    "postgresql",
+    "mongodb",
+    "mongoose"
   ],
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -139,6 +162,8 @@
     "express4": "npm:express@^4.22.3",
     "express5": "npm:express@^5.2.1",
     "globals": "^17.12.0",
+    "mongodb": "^7.6.0",
+    "mongoose": "^9.10.2",
     "mysql2": "^3.24.4",
     "pg": "^8.23.0",
     "prettier": "^3.9.9",

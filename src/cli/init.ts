@@ -12,11 +12,12 @@ import { out, print } from "./output";
 import type { Prompter } from "./prompt";
 import {
   DRIVERS,
-  migrationSql,
+  migrationFile,
   starterFile,
   type Database,
   type Language,
   type ModuleFormat,
+  type MongoStyle,
 } from "./templates";
 
 interface PlannedFile {
@@ -30,7 +31,7 @@ export async function init(flags: Flags, prompter: Prompter | undefined, version
 
   if (!prompter && flags.db === undefined) {
     throw new UsageError(
-      `Missing --db. Without a terminal to ask in, pass it explicitly: permly init --db mysql (or --db postgres)`,
+      `Missing --db. Without a terminal to ask in, pass it explicitly: permly init --db mysql (or postgres, mongodb)`,
     );
   }
 
@@ -65,15 +66,18 @@ export async function init(flags: Flags, prompter: Prompter | undefined, version
           : DEFAULT_SCHEMA;
   const outDir =
     flags.out ??
-    (prompter ? await prompter.ask("Folder for the SQL migration?", "migrations") : "migrations");
+    (prompter ? await prompter.ask("Folder for the migration file?", "migrations") : "migrations");
 
   let language: Language = flags.ts ? "ts" : flags.js ? "js" : project.typescript ? "ts" : "js";
   let format: ModuleFormat = flags.esm ? "esm" : flags.cjs ? "cjs" : project.esm ? "esm" : "cjs";
-  const { driver } = DRIVERS[db];
+  // MongoDB: use the app's mongoose if it has one, otherwise the native driver.
+  const mongoStyle: MongoStyle =
+    db === "mongodb" && isInstalled(cwd, "mongoose") ? "mongoose" : "native";
+  const driver = mongoStyle === "mongoose" ? "mongoose" : DRIVERS[db].driver;
   const driverInstalled = isInstalled(cwd, driver);
 
   const where = db === "postgres" ? ` · schema ${schema}` : "";
-  print(`  Using:    ${db}${where} · table prefix ${prefix} · SQL file in ${outDir}`);
+  print(`  Using:    ${db}${where} · table prefix ${prefix} · migration file in ${outDir}`);
   print(
     `  Detected: ${describeSetup(language, format)} · ${
       driverInstalled ? `${driver} installed` : out.yellow(`${driver} not installed`)
@@ -96,14 +100,15 @@ export async function init(flags: Flags, prompter: Prompter | undefined, version
     }
   }
 
+  const migration = migrationFile(db, prefix, schema, version);
   const files: PlannedFile[] = [
     {
-      path: migrationPath(resolve(cwd, outDir)),
-      content: migrationSql(db, prefix, schema, version),
+      path: migrationPath(resolve(cwd, outDir), migration.extension),
+      content: migration.content,
     },
     {
       path: join(cwd, project.hasSrcDir ? "src" : "", starterFileName(language, format, project)),
-      content: starterFile({ db, language, format, prefix, schema }),
+      content: starterFile({ db, language, format, prefix, schema, mongoStyle }),
     },
   ];
 
@@ -123,7 +128,7 @@ export async function init(flags: Flags, prompter: Prompter | undefined, version
   }
 
   const [sqlFile, starter] = files.map((file) => relative(cwd, file.path)) as [string, string];
-  printNextSteps({ db, sqlFile, starter, prefix, schema, driverInstalled });
+  printNextSteps({ db, sqlFile, starter, prefix, schema, driverInstalled, mongoStyle });
 }
 
 async function askDatabase(prompter: Prompter): Promise<Database> {
@@ -158,14 +163,15 @@ function describeSetup(language: Language, format: ModuleFormat): string {
   return format === "esm" ? "JavaScript (ES modules)" : "JavaScript (CommonJS)";
 }
 
-/** Reuses an existing "*_permly_init.sql" so running init twice doesn't create two migrations. */
-function migrationPath(dir: string): string {
+/** Reuses an existing "*_permly_init.<ext>" so running init twice doesn't create two migrations. */
+function migrationPath(dir: string, extension: string): string {
+  const suffix = `_permly_init.${extension}`;
   const existing = existsSync(dir)
-    ? readdirSync(dir).find((name) => name.endsWith("_permly_init.sql"))
+    ? readdirSync(dir).find((name) => name.endsWith(suffix))
     : undefined;
   if (existing) return join(dir, existing);
   const stamp = new Date().toISOString().replace(/\D/g, "").slice(0, 14); // YYYYMMDDHHMMSS, UTC
-  return join(dir, `${stamp}_permly_init.sql`);
+  return join(dir, `${stamp}${suffix}`);
 }
 
 /** permly.ts, or permly.js / .mjs / .cjs so Node loads it with the chosen module format. */
@@ -205,24 +211,36 @@ function printNextSteps(options: {
   prefix: string;
   schema: string;
   driverInstalled: boolean;
+  mongoStyle: MongoStyle;
 }) {
-  const { db, sqlFile, starter, prefix, schema, driverInstalled } = options;
+  const { db, sqlFile, starter, prefix, schema, driverInstalled, mongoStyle } = options;
   const { driver, label, urlExample } = DRIVERS[db];
+  const mongo = db === "mongodb";
   const steps: string[] = [];
   if (!driverInstalled) {
-    steps.push(`Install the ${label} driver:\n       ${out.cyan(`npm install ${driver}`)}`);
+    const alternative = mongo ? out.dim(" (or mongoose)") : "";
+    steps.push(
+      `Install the ${label} driver:\n       ${out.cyan(`npm install ${driver}`)}${alternative}`,
+    );
   }
   const flags = [
     prefix === DEFAULT_PREFIX ? "" : ` --prefix ${prefix}`,
     schema === DEFAULT_SCHEMA ? "" : ` --schema ${schema}`,
   ].join("");
+  const alternative = mongo
+    ? `or run: node ${sqlFile}`
+    : `or run ${sqlFile} with your own migration tool.`;
   steps.push(
-    `Create the tables. Set DATABASE_URL (${urlExample}), then:\n` +
+    `Create the ${mongo ? "collections and indexes" : "tables"}. Set DATABASE_URL (${urlExample}), then:\n` +
       `       ${out.cyan(`npx permly migrate${flags}`)}\n` +
-      `     ${out.dim(`or run ${sqlFile} with your own migration tool.`)}`,
+      `     ${out.dim(alternative)}`,
   );
+  const when =
+    mongoStyle === "mongoose"
+      ? "At startup, after mongoose.connect()"
+      : "At startup, before handling requests";
   steps.push(
-    `At startup, before handling requests:\n       ${out.cyan("await setupPermissions();")} ${out.dim(`// from ${starter}`)}`,
+    `${when}:\n       ${out.cyan("await setupPermissions();")} ${out.dim(`// from ${starter}`)}`,
   );
   steps.push(`Protect routes: see the examples at the end of ${starter}.`);
 

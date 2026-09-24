@@ -1,5 +1,7 @@
 import { parseArgs } from "node:util";
 
+export type Database = "mysql" | "postgres" | "mongodb";
+
 /** Wrong flags or missing input: exit code 2. */
 export class UsageError extends Error {}
 
@@ -27,12 +29,14 @@ export interface Flags {
 }
 
 export const DATABASES = ["mysql", "postgres", "mongodb"] as const;
-export const SUPPORTED_DATABASES = ["mysql", "postgres"];
+export const SUPPORTED_DATABASES = ["mysql", "postgres", "mongodb"];
 
 const ALIASES: Record<string, string> = {
   mariadb: "mysql",
   postgresql: "postgres",
   pg: "postgres",
+  mongo: "mongodb",
+  mongoose: "mongodb",
 };
 
 export function parseCommandLine(argv: string[]): { command: string | undefined; flags: Flags } {
@@ -91,7 +95,7 @@ export function parseCommandLine(argv: string[]): { command: string | undefined;
 }
 
 /** Validates a --db value (or a prompt answer). */
-export function checkDatabase(value: string): "mysql" | "postgres" {
+export function checkDatabase(value: string): Database {
   const input = value.trim().toLowerCase();
   const db = ALIASES[input] ?? input;
   if (!(DATABASES as readonly string[]).includes(db)) {
@@ -102,5 +106,5 @@ export function checkDatabase(value: string): "mysql" | "postgres" {
       `${db} support is coming soon. For now, permly init supports: ${SUPPORTED_DATABASES.join(", ")}.`,
     );
   }
-  return db as "mysql" | "postgres";
+  return db as Database;
 }

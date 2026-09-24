@@ -4,24 +4,26 @@ Simple roles & permissions for Node.js. Zero dependencies.
 
 > **Draft.** The full README (API reference, caching, FAQ) comes before the first release.
 
-## Quick start (MySQL, MariaDB or Postgres)
+## Quick start (MySQL, MariaDB, Postgres or MongoDB)
 
 ```sh
-npm install permly mysql2   # or: npm install permly pg
+npm install permly mysql2   # or: pg, mongodb, mongoose
 npx permly init
 ```
 
 `init` asks a few questions (database, table prefix, migrations folder, and the schema for
 Postgres), detects TypeScript and ES modules vs CommonJS, and creates:
 
-- `migrations/<timestamp>_permly_init.sql`, the tables (safe to run more than once)
+- `migrations/<timestamp>_permly_init.sql`, the tables (safe to run more than once); for
+  MongoDB, a `.mjs` script that creates the collections and indexes
 - `src/permly.js` (or `.ts`), your permissions setup, ready to import
 
-Create the tables, then use it:
+Create the tables (or collections), then use it:
 
 ```sh
 DATABASE_URL=mysql://user:password@localhost:3306/mydb npx permly migrate
-# or DATABASE_URL=postgres://user:password@localhost:5432/mydb npx permly migrate
+# or postgres://user:password@localhost:5432/mydb
+# or mongodb://user:password@localhost:27017/mydb (mongodb+srv:// for Atlas)
 ```
 
 ```js
@@ -42,13 +44,13 @@ Edit the roles and permissions in `src/permly.js` to fit your app.
 ### CLI reference
 
 ```text
-npx permly init       Create the SQL file and the starter src/permly.(js|ts)
-npx permly migrate    Create the tables in DATABASE_URL (never changes existing tables)
+npx permly init       Create the migration file and the starter src/permly.(js|ts)
+npx permly migrate    Create the tables / collections in DATABASE_URL (never changes existing ones)
 
---db mysql|postgres   Database (mongodb coming soon)
+--db <name>           Database: mysql, postgres or mongodb
 --prefix <prefix>     Table prefix, default perm_
 --schema <name>       Postgres schema, default public (must already exist)
---out <dir>           init: folder for the SQL file, default migrations
+--out <dir>           init: folder for the migration file, default migrations
 --ts / --js           init: starter file language (default: detected)
 --esm / --cjs         init: module format for JavaScript (default: detected)
 --force               init: overwrite existing files (otherwise it asks, or refuses in CI)
@@ -57,9 +59,10 @@ npx permly migrate    Create the tables in DATABASE_URL (never changes existing 
 ```
 
 In CI (no terminal) nothing is ever prompted: use `npx permly init --db mysql` (or
-`--db postgres`) and `npx permly migrate --yes`. `migrate` accepts `mysql://`, `mariadb://`,
-`postgres://` and `postgresql://` URLs, shows the target database but never prints the
-password, and uses the driver installed in your project (`mysql2` or `pg`).
+`postgres`, `mongodb`) and `npx permly migrate --yes`. `migrate` accepts `mysql://`,
+`mariadb://`, `postgres://`, `postgresql://`, `mongodb://` and `mongodb+srv://` URLs, shows
+the target database but never prints the password, and uses the driver installed in your
+project (`mysql2`, `pg`, `mongodb` or `mongoose`).
 
 > **Using Prisma?** Don't run permly's SQL alongside `prisma migrate`: Prisma sees tables it
 > doesn't manage as drift and may offer to reset the database. Proper Prisma support comes
@@ -312,3 +315,93 @@ server uses a certificate your machine doesn't trust and you accept that risk,
   command to fix it.
 - TypeScript: the generated `src/permly.ts` uses `import pg from "pg"`, which needs
   `esModuleInterop` (on by default in new projects) unless you use `"module": "NodeNext"`.
+
+## MongoDB
+
+Tested on MongoDB 7 and 8, standalone and replica set. Works with the native
+[`mongodb`](https://www.npmjs.com/package/mongodb) driver or with
+[`mongoose`](https://www.npmjs.com/package/mongoose), whichever your app already uses; permly
+imports neither.
+
+```sh
+npm install permly mongodb   # or: npm install permly mongoose
+```
+
+### 1. Create the collections and indexes
+
+```sh
+DATABASE_URL=mongodb://user:password@localhost:27017/mydb npx permly migrate
+```
+
+This creates six collections (`perm_roles`, `perm_permissions`, `perm_role_permissions`,
+`perm_user_roles`, `perm_user_permissions` and `perm_locks`) with their unique indexes, and
+adds any index that is missing. Existing collections and indexes are never changed. You can
+also run the `.mjs` script `permly init` generated (`node migrations/..._permly_init.mjs`),
+or use `mongodbSetup(prefix)` from `permly/mongodb` in your own migration tool.
+
+permly doesn't create indexes when your app starts: building indexes on a large production
+collection is something to do on purpose. On first use it checks they exist, and if not,
+throws an error with the exact `npx permly migrate` command to run.
+
+### 2. Connect
+
+With mongoose, pass `mongoose` itself (or a `Connection`). It uses your app's connection, so
+call `setupPermissions()` / `sync()` after `mongoose.connect()`:
+
+```js
+import mongoose from "mongoose";
+import { createPermissions } from "permly";
+import { mongodbAdapter } from "permly/mongodb";
+
+export const perms = createPermissions({
+  adapter: mongodbAdapter(mongoose),
+  permissions: ["posts.create", "posts.edit", "posts.delete"],
+  roles: ["admin", "editor"],
+});
+
+await mongoose.connect(process.env.DATABASE_URL);
+await perms.sync();
+```
+
+With the native driver, pass a database, not the client:
+
+```js
+import { MongoClient } from "mongodb";
+import { mongodbAdapter } from "permly/mongodb";
+
+const client = new MongoClient(process.env.DATABASE_URL);
+const adapter = mongodbAdapter(client.db()); // the database named in the URL
+```
+
+### Atlas
+
+Use your `mongodb+srv://` connection string, with the database name in the path
+(`...mongodb.net/mydb`), for both your app and `npx permly migrate`. The database user needs
+the `readWrite` role on that database (it covers creating collections and indexes), and your
+machine's IP must be on the project's access list.
+
+### Standalone vs replica set
+
+- **Everywhere:** `syncRoles()` (per user) and `syncPermissions()` (per role) take a lease lock:
+  a document in `perm_locks` that expires after 10 seconds, so a crashed process can't block
+  others for longer than that. Concurrent syncs run one after the other and never leave a mix
+  of two lists. Waiting for a lock gives up after 10 seconds with a `PermissionsError`
+  (`code: "LOCK_TIMEOUT"`). A TTL index cleans up old lock documents.
+- **Replica sets and sharded clusters (including Atlas):** the sync also runs in a
+  transaction, so other readers never see it half done.
+- **Standalone servers** have no transactions. A sync is still safe against other syncs, but a
+  request that reads a user's roles at the exact moment of a sync can briefly see the old list,
+  an empty one, or the new one.
+- Individual grants and revokes (`assignRole`, `givePermission`, ...) are idempotent upserts
+  and deletes. Duplicate-key errors from two requests inserting the same link at once are
+  treated as success.
+- Deleting a role or permission removes its document first and then its links. If the
+  process stops in between, the leftover links point to nothing and every read ignores them;
+  re-creating a role with the same name does not bring them back.
+
+### Notes
+
+- Names and user ids are case-sensitive (MongoDB's default binary comparison; permly never
+  sets a collation).
+- A user's roles and permissions are loaded with one aggregation (`$lookup` / `$unionWith`)
+  that only uses indexes.

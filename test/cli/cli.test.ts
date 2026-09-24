@@ -11,9 +11,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { MongoClient } from "mongodb";
 import mysql from "mysql2/promise";
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { mongodbSetup } from "../../src/adapters/mongodb-setup";
 import { mysqlSchema } from "../../src/adapters/mysql-schema";
 import { postgresSchema } from "../../src/adapters/postgres-schema";
 import { connectOrSkip } from "../adapters/db";
@@ -80,6 +82,8 @@ function project(
     src?: boolean;
     mysql2?: Install;
     pg?: Install;
+    mongodb?: Install;
+    mongoose?: Install;
     permly?: boolean;
   } = {},
 ) {
@@ -94,7 +98,7 @@ function project(
   mkdirSync(join(dir, "node_modules"));
   const link = (name: string, target: string) =>
     symlinkSync(target, join(dir, "node_modules", name), "junction");
-  for (const driver of ["mysql2", "pg"] as const) {
+  for (const driver of ["mysql2", "pg", "mongodb", "mongoose"] as const) {
     if (options[driver] === "fake") {
       const pkg = join(dir, "node_modules", driver);
       mkdirSync(pkg);
@@ -151,6 +155,7 @@ describe("general", () => {
       "index.cjs",
       "mysql.js",
       "postgres.js",
+      "mongodb.js",
       "express.js",
       "memory.js",
     ]) {
@@ -253,7 +258,7 @@ describe("init (non-interactive)", () => {
 
   it.each([
     [["init"], 2, "Missing --db"],
-    [["init", "--db", "mongodb"], 2, "mongodb support is coming soon"],
+    [["init", "--db", "mongodb", "--schema", "x"], 2, "--schema is only used with Postgres"],
     [["init", "--db", "oracle"], 2, 'Unknown database "oracle"'],
     [["init", "--db", "mysql", "--prefix", "bad-prefix"], 2, "Table prefix must contain only"],
     [["init", "--db", "mysql", "--schema", "x"], 2, "--schema is only used with Postgres"],
@@ -330,7 +335,8 @@ describe("init (interactive prompts)", () => {
     const result = await cli(["init"], dir, { input: ["", "", "", ""] });
     expect(result.code).toBe(0);
     expect(result.stdout).toContain("2) postgres");
-    expect(result.stdout).toContain("mongodb (coming soon)");
+    expect(result.stdout).toContain("3) mongodb");
+    expect(result.stdout).not.toContain("coming soon");
     expect(result.stdout).toContain("Use these settings?");
     expect(existsSync(join(dir, "src/permly.ts"))).toBe(true);
     expect(read(dir, "src/permly.ts")).toContain("mysqlAdapter");
@@ -351,10 +357,11 @@ describe("init (interactive prompts)", () => {
   it("re-asks on unsupported or invalid answers", async () => {
     const dir = project();
     const result = await cli(["init"], dir, {
-      input: ["3", "mongodb", "1", "bad-prefix", "app_", "db/sql", "maybe", "y"],
+      input: ["9", "oracle", "1", "bad-prefix", "app_", "db/sql", "maybe", "y"],
     });
     expect(result.code).toBe(0);
-    expect(result.stdout).toContain("mongodb support is coming soon");
+    expect(result.stdout).toContain('Unknown database "9"');
+    expect(result.stdout).toContain('Unknown database "oracle"');
     expect(result.stdout).toContain("Table prefix must contain only");
     expect(result.stdout).toContain("Please answer y or n.");
     expect(result.stdout).not.toContain("Postgres schema?");
@@ -403,59 +410,164 @@ describe("init (interactive prompts)", () => {
   });
 });
 
+describe("init for MongoDB", () => {
+  it("native driver: a setup script instead of SQL, and a MongoClient starter", async () => {
+    const dir = project({ ts: true, type: "module", mongodb: "fake" });
+    const result = await cli(["init", "--db", "mongodb"], dir);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Detected: TypeScript · mongodb installed");
+    expect(result.stdout).toContain("npx permly migrate");
+
+    const [script] = sqlFiles(dir);
+    expect(script).toMatch(/^\d{14}_permly_init\.mjs$/);
+    const content = read(dir, `migrations/${script}`);
+    expect(content).toContain(JSON.stringify(mongodbSetup(), null, 2)); // from mongodbSetup()
+    expect(content).toContain(`(await import("mongoose")).default.mongo.MongoClient`);
+    expect(parses(join(dir, `migrations/${script}`))).toBe(true);
+
+    const starter = read(dir, "src/permly.ts");
+    expect(starter).toContain(`import { MongoClient } from "mongodb";`);
+    expect(starter).toContain(`import { mongodbAdapter } from "permly/mongodb";`);
+    expect(starter).toContain("mongodbAdapter(client.db())");
+  });
+
+  it("uses the app's mongoose when it is installed", async () => {
+    const dir = project({ type: "module", mongoose: "fake" });
+    const result = await cli(["init", "--db", "mongodb", "--prefix", "app_"], dir);
+    expect(result.stdout).toContain("mongoose installed");
+    expect(result.stdout).toContain("after mongoose.connect()");
+    const starter = read(dir, "src/permly.js");
+    expect(starter).toContain(`import mongoose from "mongoose";`);
+    expect(starter).toContain(`mongodbAdapter(mongoose, { prefix: "app_" })`);
+    expect(starter).not.toContain("DATABASE_URL");
+    expect(parses(join(dir, "src/permly.js"))).toBe(true);
+  });
+
+  it("CommonJS starters parse, and a missing driver is explained", async () => {
+    const dir = project();
+    const result = await cli(["init", "--db", "mongo"], dir);
+    expect(result.stdout).toContain("mongodb not installed");
+    expect(result.stdout).toContain("npm install mongodb");
+    expect(result.stdout).toContain("(or mongoose)");
+    expect(read(dir, "src/permly.js")).toContain(`const { MongoClient } = require("mongodb");`);
+    expect(parses(join(dir, "src/permly.js"))).toBe(true);
+
+    const withMongoose = project({ mongoose: "fake" });
+    await cli(["init", "--db", "mongodb"], withMongoose);
+    expect(read(withMongoose, "src/permly.js")).toContain(`const mongoose = require("mongoose");`);
+    expect(parses(join(withMongoose, "src/permly.js"))).toBe(true);
+  });
+});
+
 describe("migrate (no database needed)", () => {
   const PASSWORD = "s3cret_Pw_42";
+  const drivers = { mysql2: "real", pg: "real", mongodb: "real" } as const;
 
   it.each([
     [[], 2, "No database URL"],
     [["--url", `not a url ${PASSWORD}`], 2, "The database URL is not valid"],
     [["--url", `sqlite://u:${PASSWORD}@h/db`], 2, 'Unsupported URL scheme "sqlite:"'],
     [["--url", `mysql://u:${PASSWORD}@h:3306/`], 2, "has no database name"],
+    [["--url", `mongodb://u:${PASSWORD}@h:27017`], 2, "has no database name"],
     [["--url", `mysql://u:${PASSWORD}@h/db`, "--prefix", "no-no"], 2, "Table prefix"],
     [
       ["--url", `mysql://u:${PASSWORD}@h/db`, "--schema", "x"],
       2,
       "--schema is only used with Postgres",
     ],
+    [
+      ["--url", `mongodb+srv://u:${PASSWORD}@cluster0.example.net/db`, "--schema", "x"],
+      2,
+      "--schema is only used with Postgres",
+    ],
     [["--url", `postgres://u:${PASSWORD}@h/db`, "--db", "mysql"], 2, "doesn't match the URL"],
+    [["--url", `mongodb://u:${PASSWORD}@h/db`, "--db", "postgres"], 2, "doesn't match the URL"],
     [["--url", `postgres://u:${PASSWORD}@h/db`, "--schema", "no way"], 2, "Schema must be 1-63"],
     [["--url", `mysql://u:${PASSWORD}@h/db`], 2, "Pass --yes"],
     [["--url", `postgresql://u:${PASSWORD}@h/db`], 2, "Pass --yes"],
+    [["--url", `mongodb://u:${PASSWORD}@h/db`], 2, "Pass --yes"],
   ] as const)("%j fails with exit %i", async (args, code, message) => {
-    const result = await cli(["migrate", ...args], project({ mysql2: "real", pg: "real" }));
+    const result = await cli(["migrate", ...args], project(drivers));
     expect(result.code).toBe(code);
     expect(result.stderr).toContain(message);
     expect(result.all).not.toContain(PASSWORD);
   });
 
+  it("shows multi-host and Atlas (mongodb+srv) URLs without the password", async () => {
+    const hosts = await cli(
+      ["migrate", "--url", `mongodb://admin:${PASSWORD}@h1:27017,h2:27018/app?replicaSet=rs0`],
+      project(drivers),
+    );
+    expect(hosts.stdout).toContain("Database     mongodb://admin@h1:27017,h2:27018/app");
+    expect(hosts.all).not.toContain(PASSWORD);
+
+    const atlas = await cli(
+      ["migrate", "--url", `mongodb+srv://admin:${PASSWORD}@cluster0.abcde.mongodb.net/app`],
+      project(drivers),
+    );
+    expect(atlas.stdout).toContain(
+      "Database     mongodb+srv://admin@cluster0.abcde.mongodb.net/app",
+    );
+    expect(atlas.all).not.toContain(PASSWORD);
+  });
+
   it.each([
-    ["mysql2", `mysql://u:${PASSWORD}@127.0.0.1:1/db`],
-    ["pg", `postgres://u:${PASSWORD}@127.0.0.1:1/db`],
-  ])("explains how to install %s when it is missing", async (driver, url) => {
+    ["mysql2", `mysql://u:${PASSWORD}@127.0.0.1:1/db`, "mysql2 is not installed"],
+    ["pg", `postgres://u:${PASSWORD}@127.0.0.1:1/db`, "pg is not installed"],
+    ["mongodb", `mongodb://u:${PASSWORD}@127.0.0.1:1/db`, "mongodb (or mongoose) is not installed"],
+  ])("explains how to install %s when it is missing", async (driver, url, message) => {
     const result = await cli(["migrate", "--yes"], project(), { env: { DATABASE_URL: url } });
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain(`${driver} is not installed in this project`);
+    expect(result.stderr).toContain(`${message} in this project`);
     expect(result.stderr).toContain(`npm install ${driver}`);
   });
 
   it.each([
     ["mysql", "mysql://root@127.0.0.1:1/db"],
     ["postgres", "postgres://root@127.0.0.1:1/db"],
-  ])("reports an unreachable %s server without leaking the password", async (scheme, shown) => {
+    ["mongodb", "mongodb://root@127.0.0.1:1/db"],
+  ])(
+    "reports an unreachable %s server without leaking the password",
+    { timeout: 30_000 },
+    async (scheme, shown) => {
+      const result = await cli(
+        ["migrate", "--yes", "--url", `${scheme}://root:${PASSWORD}@127.0.0.1:1/db`],
+        project(drivers),
+      );
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(`Could not connect to ${shown}`);
+      expect(result.all).not.toContain(PASSWORD);
+    },
+  );
+
+  it("reports an unknown Atlas cluster without leaking the password", async () => {
     const result = await cli(
-      ["migrate", "--yes", "--url", `${scheme}://root:${PASSWORD}@127.0.0.1:1/db`],
-      project({ mysql2: "real", pg: "real" }),
+      ["migrate", "--yes", "--url", `mongodb+srv://u:${PASSWORD}@no-such-cluster.invalid/db`],
+      project(drivers),
     );
     expect(result.code).toBe(1);
-    expect(result.stderr).toContain(`Could not connect to ${shown}`);
+    expect(result.stderr).toContain(
+      "Could not connect to mongodb+srv://u@no-such-cluster.invalid/db",
+    );
     expect(result.all).not.toContain(PASSWORD);
   });
 });
 
 // --- against real databases ---
 
+type Kind = "mysql" | "postgres" | "mongodb";
+
+/** The few admin operations the CLI tests need, per database kind. */
 interface Admin {
-  query(sql: string): Promise<Record<string, unknown>[]>;
+  createUser(name: string, password: string): Promise<void>;
+  dropUser(name: string): Promise<void>;
+  /** Tables / collections whose names start with `prefix`. */
+  names(prefix: string, schema?: string): Promise<string[]>;
+  drop(prefix: string, schema?: string): Promise<void>;
+  insertRole(prefix: string, name: string): Promise<void>;
+  roleNames(prefix: string): Promise<string[]>;
+  createSchema?(name: string, owner: string): Promise<void>;
+  dropSchema?(name: string): Promise<void>;
   end(): Promise<void>;
 }
 
@@ -463,7 +575,7 @@ interface DbTarget {
   label: string;
   envVar: string;
   adminUrl: string;
-  kind: "mysql" | "postgres";
+  kind: Kind;
   /** Appended to URLs given to the CLI and the starter file. */
   urlSuffix: string;
 }
@@ -498,37 +610,141 @@ const dbTargets: DbTarget[] = [
     // Self-signed test certificate: encrypt, but don't verify it.
     urlSuffix: "?sslmode=no-verify",
   },
+  {
+    label: "MongoDB 7",
+    envVar: "PERMLY_MONGO7_URL",
+    adminUrl: process.env.PERMLY_MONGO7_URL ?? "mongodb://127.0.0.1:27107/permly",
+    kind: "mongodb",
+    urlSuffix: "?authSource=admin",
+  },
+  {
+    label: "MongoDB 8 replica set",
+    envVar: "PERMLY_MONGO8RS_URL",
+    adminUrl: process.env.PERMLY_MONGO8RS_URL ?? "mongodb://127.0.0.1:27118/permly",
+    kind: "mongodb",
+    urlSuffix: "?authSource=admin&directConnection=true",
+  },
 ];
 
+const TABLES = ["roles", "permissions", "role_permissions", "user_roles", "user_permissions"];
+
 async function openAdmin(target: DbTarget): Promise<Admin> {
-  if (target.kind === "mysql") {
-    const pool = mysql.createPool({ uri: target.adminUrl, connectTimeout: 3000 });
-    const admin: Admin = {
-      query: async (sql) => (await pool.query(sql))[0] as Record<string, unknown>[],
-      end: () => pool.end(),
-    };
-    await admin.query("SELECT 1").catch(async (error: unknown) => {
-      await pool.end();
+  const { kind } = target;
+  const database = new URL(target.adminUrl.replace(/^mongodb:/, "http:")).pathname.slice(1);
+
+  if (kind === "mongodb") {
+    const client = new MongoClient(
+      `${target.adminUrl}${target.urlSuffix.includes("directConnection") ? "?directConnection=true" : ""}`,
+      { serverSelectionTimeoutMS: 3000 },
+    );
+    await client.connect().catch(async (error: unknown) => {
+      await client.close();
       throw error;
     });
-    return admin;
+    const db = client.db();
+    const users = client.db("admin");
+    const names = async (prefix: string) => {
+      const list = await db.listCollections({}, { nameOnly: true }).toArray();
+      return list
+        .map((c) => c.name)
+        .filter((name) => name.startsWith(prefix))
+        .sort();
+    };
+    return {
+      async createUser(name, password) {
+        await users.command({
+          createUser: name,
+          pwd: password,
+          roles: [{ role: "readWrite", db: database }],
+        });
+      },
+      async dropUser(name) {
+        await users.command({ dropUser: name }).catch(() => {});
+      },
+      names,
+      async drop(prefix) {
+        for (const name of await names(prefix)) await db.collection(name).drop();
+      },
+      async insertRole(prefix, name) {
+        await db.collection(`${prefix}roles`).insertOne({ name });
+      },
+      async roleNames(prefix) {
+        const docs = await db.collection(`${prefix}roles`).find().toArray();
+        return docs.map((doc) => String(doc.name));
+      },
+      end: () => client.close(),
+    };
   }
-  const pool = new pg.Pool({
-    connectionString: target.adminUrl + target.urlSuffix,
-    connectionTimeoutMillis: 3000,
-  });
-  const admin: Admin = {
-    query: async (sql) => (await pool.query(sql)).rows as Record<string, unknown>[],
-    end: () => pool.end(),
-  };
-  await admin.query("SELECT 1").catch(async (error: unknown) => {
-    await pool.end();
+
+  const q = (name: string) => (kind === "mysql" ? `\`${name}\`` : `"${name}"`);
+  let run: (sql: string) => Promise<Record<string, unknown>[]>;
+  let end: () => Promise<void>;
+  if (kind === "mysql") {
+    const pool = mysql.createPool({ uri: target.adminUrl, connectTimeout: 3000 });
+    run = async (sql) => (await pool.query(sql))[0] as Record<string, unknown>[];
+    end = () => pool.end();
+  } else {
+    const pool = new pg.Pool({
+      connectionString: target.adminUrl + target.urlSuffix,
+      connectionTimeoutMillis: 3000,
+    });
+    run = async (sql) => (await pool.query(sql)).rows as Record<string, unknown>[];
+    end = () => pool.end();
+  }
+  await run("SELECT 1").catch(async (error: unknown) => {
+    await end();
     throw error;
   });
-  return admin;
-}
+  const qualified = (prefix: string, table: string, schema = "public") =>
+    kind === "mysql" ? q(prefix + table) : `${q(schema)}.${q(prefix + table)}`;
 
-const TABLES = ["roles", "permissions", "role_permissions", "user_roles", "user_permissions"];
+  return {
+    async createUser(name, password) {
+      if (kind === "mysql") {
+        await run(`CREATE USER '${name}'@'%' IDENTIFIED BY '${password}'`);
+        await run(`GRANT ALL ON \`${database}\`.* TO '${name}'@'%'`);
+      } else {
+        await run(`CREATE ROLE ${name} LOGIN PASSWORD '${password}'`);
+        await run(`GRANT USAGE, CREATE ON SCHEMA public TO ${name}`);
+      }
+    },
+    async dropUser(name) {
+      if (kind === "mysql") {
+        await run(`DROP USER IF EXISTS '${name}'@'%'`);
+      } else {
+        await run(`DO $$ BEGIN
+          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${name}') THEN
+            DROP OWNED BY ${name}; DROP ROLE ${name};
+          END IF; END $$`);
+      }
+    },
+    async names(prefix, schema = "public") {
+      const where = kind === "mysql" ? "table_schema = DATABASE()" : `table_schema = '${schema}'`;
+      const rows = await run(
+        `SELECT table_name AS name FROM information_schema.tables
+         WHERE ${where} AND table_name LIKE '${prefix.replace(/_/g, "\\_")}%'`,
+      );
+      return rows.map((row) => String(row.name)).sort();
+    },
+    async drop(prefix, schema) {
+      for (const table of [...TABLES].reverse()) {
+        await run(`DROP TABLE IF EXISTS ${qualified(prefix, table, schema)}`);
+      }
+    },
+    async insertRole(prefix, name) {
+      await run(`INSERT INTO ${qualified(prefix, "roles")} (name) VALUES ('${name}')`);
+    },
+    async roleNames(prefix) {
+      return (await run(`SELECT name FROM ${qualified(prefix, "roles")}`)).map((row) =>
+        String(row.name),
+      );
+    },
+    createSchema: (name, owner) =>
+      run(`CREATE SCHEMA ${name} AUTHORIZATION ${owner}`).then(() => {}),
+    dropSchema: (name) => run(`DROP SCHEMA IF EXISTS ${name} CASCADE`).then(() => {}),
+    end,
+  };
+}
 
 for (const target of dbTargets) {
   const admin = await connectOrSkip(`${target.label} (CLI)`, target.envVar, () =>
@@ -540,60 +756,34 @@ for (const target of dbTargets) {
     const { kind, urlSuffix } = target;
     const PASSWORD = "s3cret_Pw_42";
     const PREFIX = "cli_test_";
-    const adminUrl = new URL(target.adminUrl);
+    const adminUrl = new URL(target.adminUrl.replace(/^mongodb:/, "http:"));
     const database = adminUrl.pathname.slice(1);
     const hostPort = `${adminUrl.hostname}:${adminUrl.port}`;
-    const scheme = kind === "mysql" ? "mysql" : "postgres";
+    const scheme = kind === "postgres" ? "postgres" : kind;
     const url = `${scheme}://permly_cli:${PASSWORD}@${hostPort}/${database}${urlSuffix}`;
-    const q = (name: string) => (kind === "mysql" ? `\`${name}\`` : `"${name}"`);
-
-    const dropTables = async (prefix: string, schema = "public") => {
-      for (const table of [...TABLES].reverse()) {
-        const name = kind === "mysql" ? q(prefix + table) : `${q(schema)}.${q(prefix + table)}`;
-        await db.query(`DROP TABLE IF EXISTS ${name}`);
-      }
-    };
-    const tablesLike = async (prefix: string, schema = "public") => {
-      const where = kind === "mysql" ? "table_schema = DATABASE()" : `table_schema = '${schema}'`;
-      const rows = await db.query(
-        `SELECT table_name AS name FROM information_schema.tables
-         WHERE ${where} AND table_name LIKE '${prefix.replace(/_/g, "\\_")}%'`,
-      );
-      return rows.map((row) => String(row.name)).sort();
-    };
-    const dropUser = async () => {
-      if (kind === "mysql") {
-        await db.query(`DROP USER IF EXISTS 'permly_cli'@'%'`);
-      } else {
-        await db.query(`DO $$ BEGIN
-          IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'permly_cli') THEN
-            DROP OWNED BY permly_cli; DROP ROLE permly_cli;
-          END IF; END $$`);
-      }
-    };
+    const expected = [...TABLES, ...(kind === "mongodb" ? ["locks"] : [])].map((t) => PREFIX + t);
 
     beforeAll(async () => {
+      await db.drop(PREFIX);
+      await db.drop("restart_test_");
+      await db.dropUser("permly_cli");
       // A dedicated user whose password we can look for in the output.
-      await dropTables(PREFIX);
-      await dropTables("restart_test_");
-      await dropUser();
-      if (kind === "mysql") {
-        await db.query(`CREATE USER 'permly_cli'@'%' IDENTIFIED BY '${PASSWORD}'`);
-        await db.query(`GRANT ALL ON \`${database}\`.* TO 'permly_cli'@'%'`);
-      } else {
-        await db.query(`CREATE ROLE permly_cli LOGIN PASSWORD '${PASSWORD}'`);
-        await db.query(`GRANT USAGE, CREATE ON SCHEMA public TO permly_cli`);
-      }
+      await db.createUser("permly_cli", PASSWORD);
     });
 
     afterAll(async () => {
-      await dropTables(PREFIX);
-      await dropTables("restart_test_");
-      await dropUser();
+      await db.drop(PREFIX);
+      await db.drop("restart_test_");
+      await db.dropUser("permly_cli");
       await db.end();
     });
 
-    const driverOption = kind === "mysql" ? { mysql2: "real" as const } : { pg: "real" as const };
+    const driverOption =
+      kind === "mysql"
+        ? { mysql2: "real" as const }
+        : kind === "postgres"
+          ? { pg: "real" as const }
+          : { mongodb: "real" as const };
     const migrate = (args: string[], options: Parameters<typeof cli>[2] = {}) =>
       cli(["migrate", "--prefix", PREFIX, ...args], project(driverOption), options);
 
@@ -602,61 +792,99 @@ for (const target of dbTargets) {
       expect(result.code).toBe(1);
       expect(result.stdout).toContain(`${scheme}://permly_cli@${hostPort}/${database}`);
       expect(result.stderr).toContain("Cancelled.");
-      expect(await tablesLike(PREFIX)).toEqual([]);
+      expect(await db.names(PREFIX)).toEqual([]);
     });
 
-    it("creates the tables, then is a no-op the second time", async () => {
+    it("creates everything, then is a no-op the second time", async () => {
       const first = await migrate(["--url", url], { input: ["y"] });
       expect(first.code, first.all).toBe(0);
-      for (const table of TABLES) {
-        expect(first.stdout).toMatch(new RegExp(`created\\s+${PREFIX}${table}\\b`));
-      }
-      expect(await tablesLike(PREFIX)).toEqual(TABLES.map((t) => PREFIX + t).sort());
+      for (const name of expected)
+        expect(first.stdout).toMatch(new RegExp(`created\\s+${name}\\b`));
+      expect(await db.names(PREFIX)).toEqual([...expected].sort());
 
       // DATABASE_URL instead of --url, --yes instead of a prompt.
       const second = await migrate(["--yes"], { env: { DATABASE_URL: url } });
-      expect(second.code).toBe(0);
-      for (const table of TABLES) {
-        expect(second.stdout).toMatch(new RegExp(`exists\\s+${PREFIX}${table}\\b`));
-      }
+      expect(second.code, second.all).toBe(0);
+      for (const name of expected)
+        expect(second.stdout).toMatch(new RegExp(`exists\\s+${name}\\b`));
       expect(second.stdout).not.toContain("created");
 
       for (const result of [first, second]) expect(result.all).not.toContain(PASSWORD);
     });
 
     it("keeps existing data (never drops or alters)", async () => {
-      await db.query(`INSERT INTO ${q(PREFIX + "roles")} (name) VALUES ('kept')`);
+      await db.insertRole(PREFIX, "kept");
       expect((await migrate(["--yes", "--url", url])).code).toBe(0);
-      expect(await db.query(`SELECT name FROM ${q(PREFIX + "roles")}`)).toEqual([{ name: "kept" }]);
+      expect(await db.roleNames(PREFIX)).toEqual(["kept"]);
     });
 
-    it("never prints the password, even on authentication errors", async () => {
-      const wrong = "wr0ng_Pw_99";
-      const result = await migrate(["--yes", "--url", url.replace(PASSWORD, wrong)]);
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain("Could not connect");
-      expect(result.all).not.toContain(wrong);
-      expect(result.all).not.toContain(PASSWORD);
-    });
+    it(
+      "never prints the password, even on authentication errors",
+      { timeout: 30_000 },
+      async () => {
+        const wrong = "wr0ng_Pw_99";
+        const result = await migrate(["--yes", "--url", url.replace(PASSWORD, wrong)]);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain("Could not connect");
+        expect(result.all).not.toContain(wrong);
+        expect(result.all).not.toContain(PASSWORD);
+      },
+    );
 
     if (kind === "postgres") {
       it("requires an existing schema, then creates the tables inside it", async () => {
-        await db.query(`DROP SCHEMA IF EXISTS tenant_x CASCADE`);
+        await db.dropSchema?.("tenant_x");
         const missing = await migrate(["--yes", "--schema", "tenant_x", "--url", url]);
         expect(missing.code).toBe(1);
         expect(missing.stderr).toContain(`Schema "tenant_x" does not exist`);
         expect(missing.stderr).toContain(`CREATE SCHEMA "tenant_x";`);
 
-        await db.query(`CREATE SCHEMA tenant_x AUTHORIZATION permly_cli`);
+        await db.createSchema?.("tenant_x", "permly_cli");
         try {
           const created = await migrate(["--yes", "--schema", "tenant_x", "--url", url]);
           expect(created.code, created.all).toBe(0);
-          expect(created.stdout).toContain("Schema    tenant_x");
-          expect(await tablesLike(PREFIX, "tenant_x")).toEqual(
-            TABLES.map((t) => PREFIX + t).sort(),
+          expect(created.stdout).toContain("Schema       tenant_x");
+          expect(await db.names(PREFIX, "tenant_x")).toEqual([...expected].sort());
+        } finally {
+          await db.dropSchema?.("tenant_x");
+        }
+      });
+    }
+
+    if (kind === "mongodb") {
+      it("adds a missing index to an existing collection, and says so", async () => {
+        const client = new MongoClient(url.replace("permly_cli:" + PASSWORD + "@", ""));
+        await client.connect();
+        try {
+          await client.db().collection(`${PREFIX}user_roles`).dropIndex("role_id");
+        } finally {
+          await client.close();
+        }
+        const result = await migrate(["--yes", "--url", url]);
+        expect(result.code).toBe(0);
+        expect(result.stdout).toMatch(/exists\s+cli_test_user_roles \(added index role_id\)/);
+      });
+
+      it("the generated setup script does the same as migrate", async () => {
+        const dir = project({ type: "module", mongodb: "real" });
+        await cli(["init", "--db", "mongodb", "--prefix", "script_test_"], dir);
+        const [script] = sqlFiles(dir);
+        const run = () =>
+          spawnSync(process.execPath, [join("migrations", String(script))], {
+            cwd: dir,
+            env: { ...process.env, DATABASE_URL: url },
+            encoding: "utf8",
+          });
+        try {
+          const first = run();
+          expect(first.status, first.stderr).toBe(0);
+          expect(first.stdout).toContain("created  script_test_roles");
+          expect(run().stdout).toContain("exists   script_test_roles");
+          expect(await db.names("script_test_")).toEqual(
+            [...TABLES, "locks"].map((t) => `script_test_${t}`).sort(),
           );
         } finally {
-          await db.query(`DROP SCHEMA tenant_x CASCADE`);
+          await db.drop("script_test_");
         }
       });
     }
@@ -686,7 +914,7 @@ for (const target of dbTargets) {
         return JSON.parse(result.stdout) as Record<string, string[]>;
       };
       const show = `console.log(JSON.stringify({
-        editor: await perms.role("editor").getPermissions(),
+        editor: (await perms.role("editor").getPermissions()).sort(),
         admin: await perms.role("admin").getPermissions(),
       }));`;
 

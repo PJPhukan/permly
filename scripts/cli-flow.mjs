@@ -5,6 +5,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { MongoClient } from "mongodb";
 import mysql from "mysql2/promise";
 import pg from "pg";
 
@@ -24,21 +25,60 @@ function run(cmd, args, cwd, env = {}) {
   });
 }
 
+async function withMysql(url, fn) {
+  const connection = await mysql.createConnection({ uri: url, connectTimeout: 3000 });
+  try {
+    return await fn(connection);
+  } finally {
+    await connection.end();
+  }
+}
+
+async function withPg(url, fn) {
+  const client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 3000 });
+  await client.connect();
+  try {
+    return await fn(client);
+  } finally {
+    await client.end();
+  }
+}
+
+async function withMongo(url, fn) {
+  const client = new MongoClient(url, { serverSelectionTimeoutMS: 3000 });
+  await client.connect();
+  try {
+    return await fn(client.db());
+  } finally {
+    await client.close();
+  }
+}
+
+const mongoUrl = process.env.EXAMPLES_MONGODB_URL ?? "mongodb://127.0.0.1:27107/permly";
+const mongo = {
+  db: "mongodb",
+  url: mongoUrl,
+  envVar: "EXAMPLES_MONGODB_URL",
+  ping: (url) => withMongo(url, (db) => db.command({ ping: 1 })),
+  cleanup: (url, prefix) =>
+    withMongo(url, async (db) => {
+      const collections = await db.listCollections({}, { nameOnly: true }).toArray();
+      for (const { name } of collections)
+        if (name.startsWith(prefix)) await db.collection(name).drop();
+    }),
+};
+
 const databases = [
   {
     db: "mysql",
     driver: "mysql2",
     url: process.env.EXAMPLES_DATABASE_URL ?? "mysql://root:permly@127.0.0.1:33061/permly",
     envVar: "EXAMPLES_DATABASE_URL",
-    async query(url, sql) {
-      const connection = await mysql.createConnection({ uri: url, connectTimeout: 3000 });
-      try {
-        await connection.query(sql);
-      } finally {
-        await connection.end();
-      }
-    },
-    quote: (name) => `\`${name}\``,
+    ping: (url) => withMysql(url, (c) => c.query("SELECT 1")),
+    cleanup: (url, prefix) =>
+      withMysql(url, async (c) => {
+        for (const table of TABLES) await c.query(`DROP TABLE IF EXISTS \`${prefix}${table}\``);
+      }),
   },
   {
     db: "postgres",
@@ -48,16 +88,20 @@ const databases = [
       process.env.EXAMPLES_POSTGRES_URL ??
       "postgres://postgres:permly@127.0.0.1:54317/permly?sslmode=no-verify",
     envVar: "EXAMPLES_POSTGRES_URL",
-    async query(url, sql) {
-      const client = new pg.Client({ connectionString: url, connectionTimeoutMillis: 3000 });
-      await client.connect();
-      try {
-        await client.query(sql);
-      } finally {
-        await client.end();
-      }
-    },
-    quote: (name) => `"${name}"`,
+    ping: (url) => withPg(url, (c) => c.query("SELECT 1")),
+    cleanup: (url, prefix) =>
+      withPg(url, async (c) => {
+        for (const table of TABLES) await c.query(`DROP TABLE IF EXISTS "${prefix}${table}"`);
+      }),
+  },
+  { ...mongo, driver: "mongodb" },
+  {
+    // mongoose apps: the starter uses the app's connection, so the app connects first.
+    ...mongo,
+    driver: "mongoose",
+    label: "mongodb (mongoose)",
+    only: ["JavaScript ES modules"],
+    prelude: `import mongoose from "mongoose";\nawait mongoose.connect(process.env.DATABASE_URL);\n`,
   },
 ];
 
@@ -74,7 +118,7 @@ const results = [
 ];
 await perms.role("editor").revokePermission("posts.create");
 console.log(results.every(Boolean) ? "PERMLY_OK" : "PERMLY_FAIL " + JSON.stringify(results));
-process.exit(0); // the starter's pool would otherwise keep the process alive
+process.exit(0); // open database connections would otherwise keep the process alive
 `;
 const SECOND = `
 await setupPermissions();
@@ -87,19 +131,19 @@ const variants = [
   {
     name: "JavaScript ES modules",
     packageJson: { type: "module" },
-    files: {
-      "first.js": `import { perms, setupPermissions } from "./src/permly.js";\n${FIRST}`,
-      "second.js": `import { perms, setupPermissions } from "./src/permly.js";\n${SECOND}`,
-    },
+    files: (prelude = "") => ({
+      "first.js": `${prelude}import { perms, setupPermissions } from "./src/permly.js";\n${FIRST}`,
+      "second.js": `${prelude}import { perms, setupPermissions } from "./src/permly.js";\n${SECOND}`,
+    }),
     runs: [["first.js"], ["second.js"]],
   },
   {
     name: "JavaScript CommonJS",
     packageJson: {},
-    files: {
+    files: () => ({
       "first.js": `const { perms, setupPermissions } = require("./src/permly.js");\n(async () => {${FIRST}})();`,
       "second.js": `const { perms, setupPermissions } = require("./src/permly.js");\n(async () => {${SECOND}})();`,
-    },
+    }),
     runs: [["first.js"], ["second.js"]],
   },
   {
@@ -110,7 +154,7 @@ const variants = [
       "@types/node@22",
       ...(driver === "pg" ? ["@types/pg"] : []),
     ],
-    files: {
+    files: () => ({
       "tsconfig.json": JSON.stringify({
         compilerOptions: {
           target: "ES2022",
@@ -124,7 +168,7 @@ const variants = [
       }),
       "src/first.ts": `import { perms, setupPermissions } from "./permly.js";\n${FIRST}`,
       "src/second.ts": `import { perms, setupPermissions } from "./permly.js";\n${SECOND}`,
-    },
+    }),
     // Also type-check the generated file with the older resolution modes users still have.
     typecheck: [
       ["--module", "commonjs", "--moduleResolution", "node10"],
@@ -137,7 +181,7 @@ const variants = [
 
 async function reachable(database) {
   try {
-    await database.query(database.url, "SELECT 1");
+    await database.ping(database.url);
     return true;
   } catch {
     return false;
@@ -147,9 +191,10 @@ async function reachable(database) {
 /** Returns false if the flow failed. */
 export async function testCliFlow({ tarball, work }) {
   let ok = true;
-  for (const database of databases) {
+  for (const [d, database] of databases.entries()) {
+    const label = database.label ?? database.db;
     if (!(await reachable(database))) {
-      const message = `CLI flow for ${database.db} needs a database at ${database.envVar} (default: docker compose).`;
+      const message = `CLI flow for ${label} needs a database at ${database.envVar} (default: docker compose).`;
       if (process.env.PERMLY_REQUIRE_DB === "1") {
         console.error(`✗ ${message}`);
         ok = false;
@@ -160,17 +205,18 @@ export async function testCliFlow({ tarball, work }) {
     }
 
     for (const [i, variant] of variants.entries()) {
-      const dir = join(work, `cli-${database.db}-${i}`);
-      const prefix = `permly_smoke${i}_${Date.now() % 100000}_`;
+      if (database.only && !database.only.includes(variant.name)) continue;
+      const dir = join(work, `cli-${d}-${i}`);
+      const prefix = `permly_smoke${d}${i}_${Date.now() % 100000}_`;
       const env = { DATABASE_URL: database.url };
-      const label = `CLI flow, ${database.db}, ${variant.name}`;
+      const title = `CLI flow, ${label}, ${variant.name}`;
       try {
         mkdirSync(join(dir, "src"), { recursive: true });
         writeFileSync(
           join(dir, "package.json"),
           JSON.stringify({ name: "fresh-app", private: true, ...variant.packageJson }),
         );
-        for (const [file, content] of Object.entries(variant.files)) {
+        for (const [file, content] of Object.entries(variant.files(database.prelude))) {
           writeFileSync(join(dir, file), content);
         }
 
@@ -195,18 +241,13 @@ export async function testCliFlow({ tarball, work }) {
           const output = run(process.execPath, args, dir, env);
           if (!output.includes("PERMLY_OK")) throw new Error(`${args.join(" ")}: ${output}`);
         }
-        console.log(`✓ ${label}: init → migrate → sync() → can() → restart keeps changes`);
+        console.log(`✓ ${title}: init → migrate → sync() → can() → restart keeps changes`);
       } catch (error) {
         ok = false;
         const details = [error.message, error.stdout, error.stderr].filter(Boolean).join("\n");
-        console.error(`✗ ${label}:\n${details}`);
+        console.error(`✗ ${title}:\n${details}`);
       } finally {
-        for (const table of TABLES) {
-          await database.query(
-            database.url,
-            `DROP TABLE IF EXISTS ${database.quote(prefix + table)}`,
-          );
-        }
+        await database.cleanup(database.url, prefix);
       }
     }
   }
