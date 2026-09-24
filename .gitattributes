@@ -1,0 +1,15 @@
+# Check out every text file with LF line endings on every OS (Prettier, the README example
+# tests and the generated files all expect LF). Git decides what is text.
+* text=auto eol=lf
+
+# Binary files: never touch their bytes.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.tgz binary
+*.gz binary

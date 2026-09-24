@@ -18,7 +18,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connectOrSkip } from "./adapters/db";
 
 const ROOT = resolve(import.meta.dirname, "..");
-const README = readFileSync(join(ROOT, "README.md"), "utf8");
+// Normalized: a Windows checkout without .gitattributes would have CRLF line endings.
+const README = readFileSync(join(ROOT, "README.md"), "utf8").replace(/\r\n/g, "\n");
 
 type Tag = "memory" | "skip" | "mysql" | "postgres" | "mongodb" | "mongoose";
 
@@ -260,7 +261,9 @@ describe("README examples", () => {
 
     if (block.lang === "ts") {
       it(`${title} type-checks`, () => {
-        const errors = typeErrors.split("\n").filter((text) => text.startsWith(`example-${i}.ts(`));
+        const errors = typeErrors
+          .split(/\r?\n/)
+          .filter((text) => text.startsWith(`example-${i}.ts(`));
         expect(errors).toEqual([]);
       });
       continue;

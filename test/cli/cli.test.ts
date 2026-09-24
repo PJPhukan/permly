@@ -149,6 +149,20 @@ describe("general", () => {
     expect(result.all).not.toContain("\x1b[");
   });
 
+  it("writes LF line endings on every platform (including Windows)", async () => {
+    for (const db of ["mysql", "postgres", "mongodb"]) {
+      for (const flags of [["--ts"], ["--js", "--esm"], ["--js", "--cjs"]]) {
+        const dir = project();
+        expect((await cli(["init", "--db", db, ...flags], dir)).code).toBe(0);
+        const [migration] = sqlFiles(dir);
+        const starter = readdirSync(join(dir, "src"))[0];
+        for (const file of [`migrations/${migration}`, `src/${starter}`]) {
+          expect(read(dir, file), `${db} ${flags.join(" ")}: ${file}`).not.toContain("\r");
+        }
+      }
+    }
+  });
+
   it("the library entries never load the CLI", () => {
     for (const file of [
       "index.js",

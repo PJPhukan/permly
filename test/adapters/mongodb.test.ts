@@ -72,8 +72,11 @@ for (const target of targets) {
   const client = await connectOrSkip(target.label, target.envVar, () => connect(target.url));
 
   describe.skipIf(!client)(target.label, () => {
+    // Vitest runs this body while collecting tests, even when the suite is skipped because
+    // MongoDB is unreachable (client undefined), so it must not call anything on the client.
+    // db() does no I/O; when skipped, `db` is undefined and only used by tests that don't run.
     const mongo = client as MongoClient;
-    const db = mongo.db();
+    const db = client?.db() as Db;
     const c = (name: string) => db.collection(PREFIX + name);
     const adapter = (prefix = PREFIX) => mongodbAdapter(db, { prefix });
 
