@@ -1,4 +1,4 @@
-// Checks the packed tarball on the running Node.js version (CI runs it on 18, 20 and 22).
+// Checks the packed tarball on the running Node.js version (CI runs it on 18, 20, 22 and 24).
 // The dev toolchain needs Node 22, so this is how the published package is tested on older
 // versions. Only uses APIs available in Node 18.
 //

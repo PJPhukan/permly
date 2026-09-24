@@ -62,7 +62,8 @@ npm install pg         # Postgres
 npm install mongodb    # MongoDB (or use mongoose, if your app already does)
 ```
 
-permly works with `import` and `require`, in JavaScript and TypeScript, on Node.js 18+.
+permly works with `import` and `require`, in JavaScript and TypeScript, on Node.js 18+. Node.js
+22 or 24 is recommended: 18 and 20 are end-of-life, though permly is still tested on them.
 
 ## Quick start
 

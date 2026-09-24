@@ -112,11 +112,14 @@ scripts/                examples-test, cli-flow, node-compat, gen-type-bench
 - Plain, descriptive commit messages (e.g. `Fix canOwn when the owner id is a number`).
 - One topic per pull request, with tests. The pull request template has the checklist.
 - CI must pass: lint, typecheck, build, unit tests on Linux/macOS/Windows, the packed package on
-  Node 18/20/22, database tests, and the examples.
+  Node 18/20/22/24, database tests, and the examples.
 - Update `CHANGELOG.md` (under "Unreleased") and the README for anything users will notice.
 
 ## Releasing (maintainers)
 
 1. Update the version in `package.json` and `CHANGELOG.md`.
-2. Commit, then tag and push: `git tag v0.1.0 && git push origin main v0.1.0`.
-3. The Release workflow runs every check and publishes to npm with provenance.
+2. Commit, then tag and push: `git tag v0.1.1 && git push origin main v0.1.1`.
+3. The Release workflow checks that the tag matches the version, runs every check, and
+   publishes to npm with provenance using **trusted publishing** (OIDC): there is no npm token
+   anywhere. npm accepts the publish because the package's Trusted Publisher settings on
+   npmjs.com name this repository and `release.yml`.

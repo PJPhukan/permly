@@ -13,7 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 # The dev toolchain (Vitest 5, ESLint 10) needs Node 22. The published package supports
-# Node 18+, which the "compat" job checks by installing the packed tarball on 18, 20 and 22.
+# Node 18+, which the "compat" job checks by installing the packed tarball on 18, 20, 22 and
+# 24 (18 and 20 are end-of-life but still supported by the package).
 jobs:
   quality:
     name: Lint, typecheck, build
@@ -60,7 +61,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node: [18, 20, 22]
+        node: [18, 20, 22, 24]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
