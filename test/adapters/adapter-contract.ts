@@ -122,6 +122,93 @@ export function runAdapterContract(name: string, makeAdapter: () => Promise<Perm
       });
     });
 
+    /**
+     * Runs `sync` while reading as fast as possible, then checks every read against the fail-
+     * closed rule: a read may show fewer names, never extra ones. Precisely:
+     * - nothing outside old ∪ new is ever seen,
+     * - no single read has both a name being removed and a name being added, and
+     * - a name that is being removed (in old, not in new) never comes back once a read has
+     *   seen it gone.
+     */
+    async function sampleDuringSync(
+      oldList: string[],
+      newList: string[],
+      sync: () => Promise<void>,
+      read: () => Promise<string[]>,
+    ) {
+      let done = false;
+      const samples: string[][] = [];
+      const reading = (async () => {
+        while (!done) {
+          samples.push(await read());
+          await new Promise((resolve) => setImmediate(resolve)); // let the sync progress
+        }
+      })();
+      await sync();
+      done = true;
+      await reading;
+      samples.push(await read());
+
+      const allowed = new Set([...oldList, ...newList]);
+      const removing = oldList.filter((name) => !newList.includes(name));
+      const adding = newList.filter((name) => !oldList.includes(name));
+      for (const sample of samples) {
+        expect(sample.filter((name) => !allowed.has(name))).toEqual([]);
+        // Never old-only and new-only names together: that would be more than either list.
+        const both =
+          sample.some((n) => removing.includes(n)) && sample.some((n) => adding.includes(n));
+        expect(both, `read saw removed and added names together: ${sample.join(",")}`).toBe(false);
+      }
+      for (const removed of oldList.filter((name) => !newList.includes(name))) {
+        const goneAt = samples.findIndex((sample) => !sample.includes(removed));
+        if (goneAt === -1) continue;
+        const cameBack = samples.slice(goneAt).findIndex((sample) => sample.includes(removed));
+        expect(cameBack, `${removed} came back after being removed`).toBe(-1);
+      }
+      expect([...(samples.at(-1) ?? [])].sort()).toEqual([...newList].sort());
+      return samples.length;
+    }
+
+    // A fixed shuffle so failures are reproducible: each round keeps some names, drops some
+    // and adds some.
+    const pick = (names: string[], round: number) =>
+      names.filter((_, i) => (i * 7 + round * 3) % 5 < 3);
+
+    it("reads during setUserRoles only ever see fewer roles (fail closed)", async () => {
+      const roles = Array.from({ length: 24 }, (_, i) => `r${i}`);
+      await db.createRoles(roles);
+      let current = pick(roles, 0);
+      await db.setUserRoles("sampled", current);
+      for (let round = 1; round <= 8; round++) {
+        const next = pick(roles, round);
+        await sampleDuringSync(
+          current,
+          next,
+          () => db.setUserRoles("sampled", next),
+          async () => (await db.getUserAccess("sampled")).roles,
+        );
+        current = next;
+      }
+    });
+
+    it("reads during setRolePermissions only ever see fewer permissions (fail closed)", async () => {
+      const perms = Array.from({ length: 24 }, (_, i) => `p.n${i}`);
+      await db.createPermissions(perms);
+      await db.addUserRoles("sampled", ["editor"]);
+      let current = pick(perms, 0);
+      await db.setRolePermissions("editor", current);
+      for (let round = 1; round <= 8; round++) {
+        const next = pick(perms, round);
+        await sampleDuringSync(
+          current,
+          next,
+          () => db.setRolePermissions("editor", next),
+          async () => (await db.getUserAccess("sampled")).rolePermissions,
+        );
+        current = next;
+      }
+    });
+
     it("treats user ids as opaque strings", async () => {
       const uuid = "3f2b8c1e-8a4d-4f1c-9e2a-7b6d5c4e3f21";
       await db.addUserRoles(uuid, ["admin"]);

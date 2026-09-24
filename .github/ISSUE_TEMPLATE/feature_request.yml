@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest an idea or an improvement.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the situation in your app, not the solution yet.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like permly to do?
+      description: Show how you'd like the code to look, if you can.
+      render: js
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do today instead?
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I'd be willing to open a pull request for this.

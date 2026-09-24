@@ -1,0 +1,56 @@
+name: Bug report
+description: Something doesn't work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this! For **security issues**, please don't use
+        this form: see [SECURITY.md](https://github.com/PJPhukan/permly/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Smallest code that shows it
+      description: Ideally with the memory adapter, so it runs anywhere.
+      render: js
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: permly version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: adapter
+    attributes:
+      label: Adapter
+      options:
+        - memory
+        - MySQL / MariaDB
+        - Postgres
+        - MongoDB (native driver)
+        - MongoDB (mongoose)
+        - Not adapter related
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Node.js version, OS, database version, Express version if relevant.
+      placeholder: "Node 22.12, macOS 15, Postgres 17, Express 5.1"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error message or logs
+      description: Remove passwords and other secrets first.
+      render: text

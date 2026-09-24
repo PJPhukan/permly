@@ -301,6 +301,107 @@ for (const target of targets) {
         expect(mixed).toEqual([]);
       });
 
+      if (!target.rs) {
+        it("a read that overlaps a sync can't leave the partial list in the cache", async () => {
+          // Pause the sync right before it adds the new links (the old ones that go are
+          // already removed), and read in that gap: the read sees the partial list.
+          let beforeInsert: (() => Promise<void>) | undefined;
+          const pausing = new Proxy(db, {
+            get(target, key) {
+              if (key !== "collection") {
+                const value = Reflect.get(target, key) as unknown;
+                return typeof value === "function" ? value.bind(target) : value;
+              }
+              return (name: string) => {
+                const collection = target.collection(name);
+                if (name !== `${PREFIX}user_roles`) return collection;
+                return new Proxy(collection, {
+                  get(inner, prop) {
+                    const value = Reflect.get(inner, prop) as unknown;
+                    if (prop === "bulkWrite" && typeof value === "function") {
+                      return async (...args: unknown[]) => {
+                        const hook = beforeInsert;
+                        beforeInsert = undefined;
+                        await hook?.();
+                        return value.apply(inner, args);
+                      };
+                    }
+                    return typeof value === "function" ? value.bind(inner) : value;
+                  },
+                });
+              };
+            },
+          });
+
+          // The overlapping read fetches during the gap, but only returns after the sync is done.
+          const inner = mongodbAdapter(pausing, { prefix: PREFIX });
+          let fetches = 0;
+          let holdNext = false;
+          let fetched!: () => void;
+          let release!: () => void;
+          const readFetched = new Promise<void>((resolve) => (fetched = resolve));
+          const gate = new Promise<void>((resolve) => (release = resolve));
+          const perms = createPermissions({
+            adapter: {
+              ...inner,
+              async getUserAccess(userId) {
+                fetches++;
+                const access = await inner.getUserAccess(userId);
+                if (holdNext) {
+                  holdNext = false;
+                  fetched();
+                  await gate;
+                }
+                return access;
+              },
+            },
+            cache: { ttl: 60 },
+            roles: ["a", "b", "c"],
+          });
+          await perms.sync();
+          await perms.user("u").syncRoles(["a", "b"]);
+
+          let overlapping!: Promise<string[]>;
+          beforeInsert = async () => {
+            holdNext = true;
+            overlapping = perms.user("u").getRoles();
+            await readFetched;
+          };
+          await perms.user("u").syncRoles(["a", "c"]); // removes b, then adds c
+          release();
+
+          // The overlapping read really saw the partial list...
+          expect(await overlapping).toEqual(["a"]);
+          // ...but it wasn't cached: the next read goes to the database and sees the result.
+          const before = fetches;
+          expect(await perms.user("u").getRoles()).toEqual(["a", "c"]);
+          expect(fetches).toBe(before + 1);
+          expect(await perms.user("u").getRoles()).toEqual(["a", "c"]); // now cached
+          expect(fetches).toBe(before + 1);
+        });
+
+        it("cached reads racing many syncs always settle on the final list", async () => {
+          const roles = ["a", "b", "c", "d", "e", "f"];
+          const perms = createPermissions({ adapter: adapter(), cache: { ttl: 60 }, roles });
+          await perms.sync();
+          for (let round = 0; round < 15; round++) {
+            const next = roles.filter((_, i) => (i + round) % 3 !== 0);
+            let done = false;
+            // Cached reads resolve without I/O; yield so the sync can make progress.
+            const reads = (async () => {
+              while (!done) {
+                await perms.user("race").getRoles();
+                await new Promise((resolve) => setImmediate(resolve));
+              }
+            })();
+            await perms.user("race").syncRoles(next);
+            done = true;
+            await reads;
+            expect(await perms.user("race").getRoles()).toEqual([...next].sort());
+          }
+        });
+      }
+
       it("takes over the lease of a crashed holder once it expires", async () => {
         const store = adapter();
         await store.createRoles(["a"]);

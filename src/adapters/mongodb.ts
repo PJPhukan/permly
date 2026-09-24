@@ -293,8 +293,10 @@ export function mongodbAdapter(db: object, options: MongodbAdapterOptions = {}):
         const [roleId] = await idsByName(database, c.roles, [role], session);
         if (roleId === undefined) return;
         const permissionIds = await idsByName(database, c.permissions, perms, session);
+        // Remove what's no longer wanted first, then add: without a transaction (standalone),
+        // a read in between sees fewer permissions, never extra ones. Kept ones never flicker.
         await col(database, c.rolePermissions).deleteMany(
-          { role_id: roleId },
+          { role_id: roleId, permission_id: { $nin: permissionIds } },
           withSession(session),
         );
         await upsertLinks(
@@ -372,8 +374,10 @@ export function mongodbAdapter(db: object, options: MongodbAdapterOptions = {}):
     setUserRoles: (userId, roles) =>
       exclusive(leaseKey("user", userId), async (database, session) => {
         const roleIds = await idsByName(database, c.roles, roles, session);
+        // Remove first, then add (fail closed): a read in between sees fewer roles, never
+        // extra ones. Roles in both lists are never touched.
         await col(database, c.userRoles).deleteMany(
-          { user_id: userId, team_id: NO_TEAM },
+          { user_id: userId, team_id: NO_TEAM, role_id: { $nin: roleIds } },
           withSession(session),
         );
         await upsertLinks(

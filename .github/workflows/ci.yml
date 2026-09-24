@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# The dev toolchain (Vitest 5, ESLint 10) needs Node 22. The published package supports
+# Node 18+, which the "compat" job checks by installing the packed tarball on 18, 20 and 22.
+jobs:
+  quality:
+    name: Lint, typecheck, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Pack
+        run: npm pack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: permly-*.tgz
+
+  unit:
+    name: Unit tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # No databases here: their tests skip with a message. The "databases" job runs them.
+      - run: npm test
+
+  compat:
+    name: Package on Node ${{ matrix.node }} (${{ matrix.os }})
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [18, 20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: package
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install the tarball and exercise every entry point
+        shell: bash
+        run: node scripts/node-compat.mjs permly-*.tgz
+
+  databases:
+    name: Database tests (MySQL, MariaDB, Postgres, MongoDB)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # docker compose rather than job service containers: Postgres 17 needs an SSL
+      # certificate generated at start, and the MongoDB replica sets need initiating.
+      - name: Start databases
+        run: docker compose up -d --wait
+      - name: Test (fail if a database is unreachable)
+        run: npm run test:ci
+      - if: failure()
+        run: docker compose logs --tail=100
+
+  examples:
+    name: Examples and CLI flow
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Start databases
+        run: docker compose up -d --wait
+      - name: Examples and the new-user CLI flow, from the packed tarball
+        run: npm run examples:test
+        env:
+          PERMLY_REQUIRE_DB: "1"

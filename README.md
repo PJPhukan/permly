@@ -1,76 +1,148 @@
 # permly
 
-Simple roles & permissions for Node.js. Zero dependencies.
+**Simple roles & permissions for Node.js.** Install, run one command, and check permissions in
+minutes. Express middleware included; works with MySQL, MariaDB, Postgres and MongoDB.
 
-> **Draft.** The full README (API reference, caching, FAQ) comes before the first release.
+[![npm version](https://img.shields.io/npm/v/permly.svg)](https://www.npmjs.com/package/permly)
+[![license: MIT](https://img.shields.io/npm/l/permly.svg)](./LICENSE)
+[![CI](https://github.com/PJPhukan/permly/actions/workflows/ci.yml/badge.svg)](https://github.com/PJPhukan/permly/actions/workflows/ci.yml)
+[![install size](https://packagephobia.com/badge?p=permly)](https://packagephobia.com/result?p=permly)
 
-## Quick start (MySQL, MariaDB, Postgres or MongoDB)
+<!-- test: skip (teaser) -->
+
+```js
+await perms.user(user.id).assignRole("editor");
+await perms.user(user.id).can("posts.create"); // true
+```
+
+- [Why permly?](#why-permly)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Core concepts](#core-concepts)
+- [Express](#express)
+- [Databases](#databases): [MySQL / MariaDB](#mysql--mariadb) · [Postgres](#postgres) ·
+  [MongoDB](#mongodb)
+- [Guides](#guides)
+- [Coming from Laravel (spatie/laravel-permission)](#coming-from-laravel-spatielaravel-permission)
+- [API reference](#api-reference)
+- [FAQ and troubleshooting](#faq-and-troubleshooting)
+
+## Why permly?
+
+Most apps start with `if (user.isAdmin)`. Then come editors, then "editors can only edit their
+own posts", then one customer who needs one extra permission... and the checks end up
+scattered and inconsistent. permly gives you one clear model instead:
+
+- **Roles and permissions**, stored in your database: users get roles, roles get permissions,
+  and a user can get an extra permission directly.
+- **One-line checks** everywhere: `can`, `hasRole`, `canOwn` for "only your own", and
+  wildcards like `posts.*`.
+- **Express middleware** that answers 401 / 403 / 404 for you.
+- **Typos are caught**: TypeScript autocompletes permission names, and at runtime an unknown
+  name throws `Permission "posts.edt" does not exist. Did you mean "posts.edit"?`
+- **Easy start**: `npx permly init` writes the setup for your project and database.
+- **Small and safe**: zero runtime dependencies, built-in caching, safe under concurrency, and
+  it never adds foreign keys to your own tables.
+
+Inspired by [spatie/laravel-permission](https://github.com/spatie/laravel-permission), with a
+smaller API.
+
+## Install
 
 ```sh
-npm install permly mysql2   # or: pg, mongodb, mongoose
+npm install permly
+# or: yarn add permly / pnpm add permly
+```
+
+Then add the driver for your database (skip this for the in-memory adapter):
+
+```sh
+npm install mysql2     # MySQL or MariaDB
+npm install pg         # Postgres
+npm install mongodb    # MongoDB (or use mongoose, if your app already does)
+```
+
+permly works with `import` and `require`, in JavaScript and TypeScript, on Node.js 18+.
+
+## Quick start
+
+**1. Generate the setup** (asks a few questions, detects TypeScript and ES modules):
+
+```sh
 npx permly init
 ```
 
-`init` asks a few questions (database, table prefix, migrations folder, and the schema for
-Postgres), detects TypeScript and ES modules vs CommonJS, and creates:
+This creates two files:
 
-- `migrations/<timestamp>_permly_init.sql`, the tables (safe to run more than once); for
-  MongoDB, a `.mjs` script that creates the collections and indexes
-- `src/permly.js` (or `.ts`), your permissions setup, ready to import
+- `src/permly.js` (or `.ts`): your roles and permissions, ready to import.
+- `migrations/<timestamp>_permly_init.sql`: the tables (a `.mjs` script for MongoDB).
 
-Create the tables (or collections), then use it:
+**2. Create the tables** in your database:
 
 ```sh
 DATABASE_URL=mysql://user:password@localhost:3306/mydb npx permly migrate
-# or postgres://user:password@localhost:5432/mydb
-# or mongodb://user:password@localhost:27017/mydb (mongodb+srv:// for Atlas)
 ```
+
+(Or run the generated SQL file with your own migration tool.)
+
+**3. Use it.** Call `setupPermissions()` once at startup, then check anywhere:
 
 ```js
-import { perms, setupPermissions } from "./src/permly.js";
+import { perms, setupPermissions } from "./permly.js";
 
-// Once at startup. Creates missing roles/permissions; the default grants in the file are
-// only applied the first time, so permission changes made later survive restarts.
-await setupPermissions();
+await setupPermissions(); // creates the roles and permissions, grants the defaults once
 
 await perms.user(1).assignRole("editor");
+
 await perms.user(1).can("posts.create"); // true
 await perms.user(1).can("posts.delete"); // false
-await perms.user(1).canOwn("posts.edit", post.userId); // true only for their own posts
+await perms.user(1).canOwn("posts.edit", 1); // true (it's their own post)
+await perms.user(1).canOwn("posts.edit", 2); // false
 ```
 
-Edit the roles and permissions in `src/permly.js` to fit your app.
+<details>
+<summary>TypeScript</summary>
 
-### CLI reference
+```ts
+import { perms, setupPermissions } from "./permly.js";
 
-```text
-npx permly init       Create the migration file and the starter src/permly.(js|ts)
-npx permly migrate    Create the tables / collections in DATABASE_URL (never changes existing ones)
+await setupPermissions(); // creates the roles and permissions, grants the defaults once
 
---db <name>           Database: mysql, postgres or mongodb
---prefix <prefix>     Table prefix, default perm_
---schema <name>       Postgres schema, default public (must already exist)
---out <dir>           init: folder for the migration file, default migrations
---ts / --js           init: starter file language (default: detected)
---esm / --cjs         init: module format for JavaScript (default: detected)
---force               init: overwrite existing files (otherwise it asks, or refuses in CI)
---url <url>           migrate: database URL instead of DATABASE_URL
---yes                 migrate: skip the confirmation
+await perms.user(1).assignRole("editor");
+
+const allowed: boolean = await perms.user(1).can("posts.create");
+// @ts-expect-error: typos are compile errors
+await perms.user(1).can("posts.crate");
 ```
 
-In CI (no terminal) nothing is ever prompted: use `npx permly init --db mysql` (or
-`postgres`, `mongodb`) and `npx permly migrate --yes`. `migrate` accepts `mysql://`,
-`mariadb://`, `postgres://`, `postgresql://`, `mongodb://` and `mongodb+srv://` URLs, shows
-the target database but never prints the password, and uses the driver installed in your
-project (`mysql2`, `pg`, `mongodb` or `mongoose`).
+</details>
 
-> **Using Prisma?** Don't run permly's SQL alongside `prisma migrate`: Prisma sees tables it
-> doesn't manage as drift and may offer to reset the database. Proper Prisma support comes
-> later; until then, keep permly's tables in a database Prisma doesn't migrate.
+The generated `permly.js` looks like this (edit the lists to fit your app):
 
-### Without a database
+<!-- test: skip (shown for reading; the generated file itself is tested by the CLI tests) -->
 
-For tests and prototypes, the in-memory adapter needs no setup:
+```js
+import { createPool } from "mysql2/promise";
+import { createPermissions } from "permly";
+import { mysqlAdapter } from "permly/mysql";
+
+export const perms = createPermissions({
+  adapter: mysqlAdapter(createPool(process.env.DATABASE_URL)),
+  permissions: ["posts.create", "posts.edit", "posts.edit.own", "posts.delete"],
+  roles: ["admin", "editor", "viewer"],
+});
+
+export async function setupPermissions() {
+  const { createdRoles } = await perms.sync();
+  // Defaults are granted only when a role is first created, so later changes survive restarts.
+  if (createdRoles.includes("admin")) await perms.role("admin").givePermission("*");
+  if (createdRoles.includes("editor")) {
+    await perms.role("editor").givePermission("posts.create", "posts.edit.own");
+  }
+}
+```
+
+No database yet? Use the in-memory adapter: perfect for trying permly, prototypes and tests.
 
 ```js
 import { createPermissions } from "permly";
@@ -78,129 +150,533 @@ import { memoryAdapter } from "permly/memory";
 
 const perms = createPermissions({
   adapter: memoryAdapter(),
-  permissions: ["posts.create", "posts.edit", "posts.edit.own", "posts.delete"],
-  roles: ["admin", "editor"],
+  permissions: ["posts.create", "posts.edit"],
+  roles: ["editor"],
 });
 
-await perms.sync(); // creates the roles and permissions above if missing
-await perms.role("editor").givePermission("posts.create", "posts.edit.own");
-await perms.role("admin").givePermission("posts.*");
+await perms.sync();
+await perms.role("editor").givePermission("posts.create");
+await perms.user("alice").assignRole("editor");
+await perms.user("alice").can("posts.create"); // true
 ```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import { createPermissions } from "permly";
+import { memoryAdapter } from "permly/memory";
+
+const perms = createPermissions({
+  adapter: memoryAdapter(),
+  permissions: ["posts.create", "posts.edit"],
+  roles: ["editor"],
+});
+
+await perms.sync();
+await perms.role("editor").givePermission("posts.create");
+await perms.user("alice").assignRole("editor");
+const allowed: boolean = await perms.user("alice").can("posts.create");
+```
+
+</details>
+
+## Core concepts
+
+The examples below import `perms` from the file `npx permly init` generated, with these lists:
+
+- Permissions: `posts.create`, `posts.edit`, `posts.edit.own`, `posts.delete`
+- Roles: `admin`, `editor`, `viewer`
+
+### Permissions and roles
+
+A **permission** is something a user may do, named like `posts.edit` (letters, numbers, `_` and
+`-`, separated by dots). A **role** is a named group of permissions, like `editor`.
+
+List them in `createPermissions()` and call `sync()` at startup: it creates the missing ones and
+never deletes anything, so it's safe on every start. Then give roles their permissions:
+
+```js
+import { perms } from "./permly.js";
+
+await perms.sync();
+
+await perms.role("editor").givePermission("posts.create", "posts.edit");
+await perms.role("editor").revokePermission("posts.edit");
+await perms.role("viewer").syncPermissions([]); // replace the whole list
+
+await perms.role("editor").getPermissions(); // → ["posts.create"]
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import { perms } from "./permly.js";
+
+await perms.sync();
+
+await perms.role("editor").givePermission("posts.create", "posts.edit");
+await perms.role("editor").revokePermission("posts.edit");
+await perms.role("viewer").syncPermissions([]);
+
+const list: string[] = await perms.role("editor").getPermissions();
+```
+
+</details>
+
+Grants are stored in the database, so they survive restarts. Create or delete roles and
+permissions at runtime with `perms.createRole()`, `perms.createPermission()`,
+`perms.deleteRole()` and `perms.deletePermission()`; deleting removes it from every user and
+role too.
+
+### Users
+
+User ids can be numbers or strings (integer ids, UUIDs, MongoDB ObjectIds). `1` and `"1"` are
+the same user. permly never touches your users table.
+
+```js
+import { perms } from "./permly.js";
+
+await perms.sync();
+
+await perms.user(42).assignRole("editor", "viewer"); // several at once
+await perms.user(42).removeRole("viewer");
+await perms.user(42).syncRoles(["editor"]); // replace all roles
+await perms.user(42).getRoles(); // → ["editor"]
+
+// A permission for this one user, on top of their roles:
+await perms.user(42).givePermission("posts.delete");
+await perms.user(42).revokePermission("posts.delete");
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import { perms } from "./permly.js";
+
+await perms.sync();
+
+await perms.user(42).assignRole("editor", "viewer");
+await perms.user(42).removeRole("viewer");
+await perms.user(42).syncRoles(["editor"]);
+const roles: string[] = await perms.user(42).getRoles();
+
+await perms.user(42).givePermission("posts.delete");
+await perms.user(42).revokePermission("posts.delete");
+```
+
+</details>
+
+### Checks
+
+```js
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions(); // editor: posts.create, posts.edit.own
+await perms.user(1).assignRole("editor");
+const user = perms.user(1);
+
+await user.can("posts.create"); // true
+await user.canAny(["posts.delete", "posts.create"]); // true
+await user.canAll(["posts.delete", "posts.create"]); // false
+await user.hasRole("editor"); // true
+await user.hasAnyRole(["admin", "viewer"]); // false
+await user.hasAllRoles(["editor"]); // true
+await user.getPermissions(); // → ["posts.create","posts.edit.own"]
+
+// authorize() throws PermissionDeniedError instead of returning false:
+await user.authorize("posts.create"); // passes silently
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+await perms.user(1).assignRole("editor");
+const user = perms.user(1);
+
+const canCreate: boolean = await user.can("posts.create");
+const canEither: boolean = await user.canAny(["posts.delete", "posts.create"]);
+const isEditor: boolean = await user.hasRole("editor");
+const permissions: string[] = await user.getPermissions();
+await user.authorize("posts.create");
+```
+
+</details>
+
+### Only your own: `canOwn`
+
+A common rule: editors may edit **their own** posts, admins may edit **any** post. Give editors
+`posts.edit.own` and admins `posts.edit`, then:
+
+```js
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions(); // editor has posts.edit.own, admin has "*"
+await perms.user(1).assignRole("editor");
+await perms.user(9).assignRole("admin");
+
+const post = { id: 7, userId: 1 };
+
+await perms.user(1).canOwn("posts.edit", post.userId); // true
+await perms.user(2).canOwn("posts.edit", post.userId); // false
+await perms.user(9).canOwn("posts.edit", post.userId); // true
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+await perms.user(1).assignRole("editor");
+
+const post = { id: 7, userId: 1 };
+const allowed: boolean = await perms.user(1).canOwn("posts.edit", post.userId);
+```
+
+</details>
+
+`canOwn(p, ownerId)` is true when the user has `p`, or has `p + ".own"` and `ownerId` is their
+id. A missing owner (`null` / `undefined`) never matches.
+
+### Wildcards
+
+`posts.*` grants every permission that starts with `posts.`, and `*` grants everything.
+Wildcards are granted like normal permissions (they're created automatically), but you always
+check a concrete name:
+
+```js
+import { perms } from "./permly.js";
+
+await perms.sync();
+await perms.role("admin").givePermission("*");
+await perms.user(5).givePermission("posts.*");
+
+await perms.user(5).can("posts.delete"); // true
+await perms.user(5).getPermissions(); // → ["posts.*"]
+await perms.user(5).getPermissions({ expand: true }); // → ["posts.create","posts.delete","posts.edit","posts.edit.own"]
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import { perms } from "./permly.js";
+
+await perms.sync();
+await perms.role("admin").givePermission("*");
+await perms.user(5).givePermission("posts.*", "posts.edit.*"); // autocompleted too
+const expanded: string[] = await perms.user(5).getPermissions({ expand: true });
+```
+
+</details>
+
+### Strict mode
+
+By default (`strict: true`), using a name that doesn't exist throws, so a typo can't silently
+change who gets access:
+
+```js
+import { perms } from "./permly.js";
+
+await perms.sync();
+try {
+  await perms.user(1).can("posts.edt");
+} catch (error) {
+  error.message; // → "Permission \"posts.edt\" does not exist. Did you mean \"posts.edit\"?"
+}
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import { perms } from "./permly.js";
+
+await perms.sync();
+// In TypeScript the typo doesn't even compile:
+// @ts-expect-error: "posts.edt" is not one of your permission names
+const check = perms.user(1).can("posts.edt");
+await check.catch(() => false); // at runtime, strict mode would throw
+```
+
+</details>
+
+With `strict: false`, checks with unknown names simply return `false`. Changes (like
+`givePermission("posts.edt")`) always throw, in both modes.
+
+### Caching
+
+Each user's roles and permissions are cached in memory for 60 seconds, so checks are fast.
+Every change made through permly clears the affected entries immediately.
+
+```js
+import { createPermissions } from "permly";
+import { memoryAdapter } from "permly/memory";
+
+const perms = createPermissions({
+  adapter: memoryAdapter(),
+  cache: { ttl: 10 }, // seconds; `cache: false` turns it off
+});
+
+perms.clearCache(); // e.g. after changing permissions directly in the database
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import { createPermissions } from "permly";
+import { memoryAdapter } from "permly/memory";
+
+const perms = createPermissions({ adapter: memoryAdapter(), cache: { ttl: 10 } });
+perms.clearCache();
+```
+
+</details>
+
+The cache lives in each Node.js process. With several servers, see
+[Multiple servers](#multiple-servers).
+
+### Errors
+
+| Error                     | When                                                   | Extra fields             |
+| ------------------------- | ------------------------------------------------------ | ------------------------ |
+| `PermissionDeniedError`   | `authorize()` fails                                    | `missing: string[]`      |
+| `PermissionNotFoundError` | a permission name doesn't exist                        | `permission, suggestion` |
+| `RoleNotFoundError`       | a role name doesn't exist                              | `role, suggestion`       |
+| `InvalidInputError`       | a bad argument, e.g. a name with spaces                |                          |
+| `PermissionsError`        | base class of all of these; `code: "LOCK_TIMEOUT"` too | `code`                   |
+
+Check them with `isPermissionDeniedError()` / `isPermissionsError()` rather than `instanceof`:
+they also work if your app ends up with two copies of permly (e.g. one loaded with `require` and
+one with `import`).
+
+```js
+import { isPermissionDeniedError } from "permly";
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+
+try {
+  await perms.user(1).authorize(["posts.create", "posts.delete"]);
+} catch (error) {
+  if (!isPermissionDeniedError(error)) throw error;
+  error.missing; // → ["posts.create","posts.delete"]
+}
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import { isPermissionDeniedError } from "permly";
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+
+try {
+  await perms.user(1).authorize(["posts.create", "posts.delete"]);
+} catch (error) {
+  if (!isPermissionDeniedError(error)) throw error;
+  const missing: string[] = error.missing; // narrowed to PermissionDeniedError
+}
+```
+
+</details>
 
 ## Express
 
-Works with Express 4 and 5. `permly/express` has no dependencies and doesn't import Express.
+Works with Express 4 and 5. Your auth middleware sets `req.user` (with an `id`); permly reads
+`req.user.id` by default.
+
+```js
+import express from "express";
+import { permlyExpress, requirePermission } from "permly/express";
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+const app = express();
+app.use((req, res, next) => {
+  req.user = { id: req.get("x-user-id") }; // replace with your real auth
+  next();
+});
+
+// One-off: one function per route.
+app.delete("/posts/:id", requirePermission(perms, "posts.delete"), (req, res) => {
+  res.json({ deleted: req.params.id });
+});
+
+// Or create a guard once and reuse it.
+const guard = permlyExpress(perms);
+app.post("/posts", guard.permission("posts.create"), (req, res) => res.json({ ok: true }));
+app.get("/admin", guard.role("admin"), (req, res) => res.json({ ok: true }));
+app.get("/reports", guard.anyPermission(["posts.edit", "posts.delete"]), (req, res) =>
+  res.json({ ok: true }),
+);
+
+app.listen(3000);
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import express from "express";
+import { permlyExpress, requirePermission } from "permly/express";
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+const app = express();
+
+app.delete("/posts/:id", requirePermission(perms, "posts.delete"), (req, res) => {
+  res.json({ deleted: req.params.id });
+});
+
+const guard = permlyExpress(perms);
+app.post("/posts", guard.permission("posts.create"), (_req, res) => {
+  res.json({ ok: true });
+});
+// @ts-expect-error: typos in permission names don't compile
+guard.permission("posts.crate");
+
+app.listen(3000);
+```
+
+</details>
+
+With `require`:
 
 ```js
 const express = require("express");
-const { permlyExpress, requirePermission } = require("permly/express");
+const { requireRole } = require("permly/express");
+const { createPermissions } = require("permly");
+const { memoryAdapter } = require("permly/memory");
+
+const perms = createPermissions({ adapter: memoryAdapter(), roles: ["admin"] });
+const app = express();
+app.get("/admin", requireRole(perms, "admin"), (req, res) => res.json({ ok: true }));
+```
+
+What the middleware answers:
+
+| Situation                                         | Response                                                    |
+| ------------------------------------------------- | ----------------------------------------------------------- |
+| No user                                           | `401 { "error": "Unauthorized" }`                           |
+| Missing permission or role                        | `403 { "error": "Forbidden", "missing": ["posts.delete"] }` |
+| `own()` found no resource                         | `404 { "error": "Not Found" }`                              |
+| Anything else (e.g. database down, a typo'd name) | passed to `next(err)`, i.e. your error handler              |
+
+Guards: `permission`, `anyPermission`, `allPermissions`, `role`, `anyRole`, `allRoles`, `own`.
+Simple functions: `requirePermission`, `requireAnyPermission`, `requireAllPermissions`,
+`requireRole`, `requireAnyRole`, `requireAllRoles` (options as a third argument).
+
+### Ownership in routes: `own()`
+
+`own(permission, loadOwnerId)` loads the resource's owner and applies `canOwn`. If the loader
+returns `null` / `undefined`, it answers 404 before checking anything else.
+
+```js
+import express from "express";
+import { permlyExpress } from "permly/express";
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+const posts = new Map([["7", { id: "7", userId: "1", title: "Hello" }]]);
 
 const app = express();
-// ... your auth middleware sets req.user = { id } ...
+app.use(express.json());
+app.use((req, res, next) => {
+  req.user = { id: req.get("x-user-id") };
+  next();
+});
 
-// One-off: a single function per route.
-app.delete("/posts/:id", requirePermission(perms, "posts.delete"), deletePost);
-
-// Or create a guard once and reuse it (options apply to every route).
 const guard = permlyExpress(perms);
-
-app.post("/posts", guard.permission("posts.create"), createPost);
-app.get("/reports", guard.anyPermission(["reports.view", "reports.export"]), listReports);
-app.get("/admin", guard.role("admin"), adminPage);
-
-// Ownership: allowed with "posts.edit", or with "posts.edit.own" on your own post.
 app.put(
   "/posts/:id",
-  guard.own("posts.edit", async (req) => (await db.getPost(req.params.id))?.userId),
-  updatePost,
+  guard.own("posts.edit", async (req) => posts.get(req.params.id)?.userId),
+  (req, res) => res.json({ ...posts.get(req.params.id), ...req.body }),
 );
 ```
 
-| Situation                                              | Response                                                    |
-| ------------------------------------------------------ | ----------------------------------------------------------- |
-| No user                                                | `401 { "error": "Unauthorized" }`                           |
-| Missing permission or role                             | `403 { "error": "Forbidden", "missing": ["posts.delete"] }` |
-| `own()` loader returns `null`/`undefined`              | `404 { "error": "Not Found" }`                              |
-| Anything else (database down, unknown permission name) | passed to `next(err)`, i.e. your error handler              |
+<details>
+<summary>TypeScript</summary>
 
-All guards: `permission`, `anyPermission`, `allPermissions`, `role`, `anyRole`, `allRoles`,
-`own`. The simple functions are `requirePermission`, `requireAnyPermission`,
-`requireAllPermissions`, `requireRole`, `requireAnyRole` and `requireAllRoles`; each takes the
-same options as a third argument.
+```ts
+import express from "express";
+import { permlyExpress } from "permly/express";
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+const posts = new Map([["7", { id: "7", userId: "1", title: "Hello" }]]);
+const app = express();
+const guard = permlyExpress(perms);
+
+app.put(
+  "/posts/:id",
+  guard.own("posts.edit", async (req) => posts.get(String(req.params.id))?.userId),
+  (req, res) => {
+    res.json(posts.get(String(req.params.id)));
+  },
+);
+```
+
+</details>
 
 ### Options
 
 ```js
+import { permlyExpress } from "permly/express";
+import { perms } from "./permly.js";
+
 const guard = permlyExpress(perms, {
-  // Default: req.user?.id. May be async.
-  getUserId: (req) => req.session.userId,
-
+  getUserId: (req) => req.session?.userId, // default: req.user?.id; may be async
   onUnauthenticated: (req, res) => res.status(401).json({ error: "Please log in" }),
-
-  // `missing` lists permissions (or roles, for role guards). Hide it if you prefer.
-  onDenied: (req, res, missing) => res.status(403).json({ error: "Forbidden" }),
-
+  onDenied: (req, res, missing) => res.status(403).json({ error: "Forbidden" }), // hides `missing`
   onNotFound: (req, res) => res.status(404).json({ error: "Post not found" }),
 });
 ```
 
-### TypeScript
-
-Permission and role names autocomplete, and typos don't compile:
+<details>
+<summary>TypeScript</summary>
 
 ```ts
-import express, { type Request } from "express";
-import { permlyExpress, requireRole } from "permly/express";
+import type { Request, Response } from "express";
+import { permlyExpress } from "permly/express";
+import { perms } from "./permly.js";
 
-const perms = createPermissions({
-  adapter,
-  permissions: ["posts.create", "posts.edit", "posts.edit.own"],
-  roles: ["admin", "editor"],
+interface SessionRequest extends Request {
+  session?: { userId?: number };
+}
+
+const guard = permlyExpress(perms, {
+  getUserId: (req: SessionRequest) => req.session?.userId,
+  onDenied: (_req: SessionRequest, res: Response, missing: string[]) => {
+    res.status(403).json({ error: "Forbidden", missing });
+  },
 });
-
-// Assumes your auth types req.user (see examples/express-ts for the declaration).
-const guard = permlyExpress(perms, { getUserId: (req: Request) => req.user?.id });
-
-app.post("/posts", guard.permission("posts.create"), createPost);
-app.get("/admin", requireRole(perms, "admin"), adminPage);
-
-guard.permission("posts.crate"); // ✗ compile error
 ```
 
-Loaders and callbacks get your request type when you annotate `getUserId`, and a loose
-`req` otherwise.
+</details>
 
-See [`examples/`](./examples) for complete apps in CommonJS, ES modules and TypeScript.
+## Databases
 
-## MySQL / MariaDB
+permly stores roles and permissions in five tables (or collections) prefixed `perm_`. Change
+the prefix with `{ prefix: "myapp_" }` on the adapter and `--prefix` on the CLI. It never adds
+foreign keys to your own tables, and user ids are stored as strings (up to 64 characters).
 
-Tested on MySQL 8.4 and MariaDB 11. Uses [`mysql2`](https://www.npmjs.com/package/mysql2),
-which you install yourself:
+### MySQL / MariaDB
 
-```sh
-npm install permly mysql2
-```
+Tested on MySQL 8.4 (and 5.7) and MariaDB 11. Uses the `mysql2` driver.
 
-### 1. Create the tables
-
-The easiest way is `npx permly migrate` (see Quick start). To run the SQL yourself, e.g. with
-your own migration tool, use the file `permly init` generated, or get it from code:
-
-```js
-import { mysqlSchema } from "permly/mysql";
-
-console.log(mysqlSchema()); // or mysqlSchema("myapp_perm_") for a custom prefix
-```
-
-It creates `perm_roles`, `perm_permissions`, `perm_role_permissions`, `perm_user_roles` and
-`perm_user_permissions`. Statements use `CREATE TABLE IF NOT EXISTS`, so re-running is safe.
-`mysqlSchemaStatements()` returns the same SQL as an array, one statement each, if your
-connection doesn't allow multiple statements.
-
-permly never adds a foreign key to your users table. User ids are stored as strings (up to 64
-characters), so integer ids, UUIDs and ObjectIds all work.
-
-### 2. Connect
+<!-- test: mysql -->
 
 ```js
 import mysql from "mysql2/promise";
@@ -208,55 +684,51 @@ import { createPermissions } from "permly";
 import { mysqlAdapter } from "permly/mysql";
 
 const pool = mysql.createPool(process.env.DATABASE_URL);
-
 const perms = createPermissions({
-  adapter: mysqlAdapter(pool), // or mysqlAdapter(pool, { prefix: "myapp_perm_" })
-  permissions: ["posts.create", "posts.edit", "posts.delete"],
-  roles: ["admin", "editor"],
+  adapter: mysqlAdapter(pool), // or mysqlAdapter(pool, { prefix: "myapp_" })
+  permissions: ["posts.create", "posts.edit"],
+  roles: ["editor"],
 });
 
 await perms.sync();
+await perms.user(1).assignRole("editor");
+await perms.user(1).hasRole("editor"); // true
 ```
 
-Pass a **pool** from `mysql2/promise`. If you already use the callback API
-(`require("mysql2").createPool()`), pass `pool.promise()`.
+<details>
+<summary>TypeScript</summary>
 
-### Notes
+<!-- test: mysql -->
 
-- Role names, permission names and user ids are **case-sensitive** (`utf8mb4_bin`).
-- `syncRoles()` and `syncPermissions()` run in a transaction and are safe to call concurrently.
-  `syncRoles()` uses a named lock (`GET_LOCK`) per user, which Galera clusters don't support.
-  If another `syncRoles()` for the same user holds it for more than 10 seconds, it throws a
-  `PermissionsError` with `code: "LOCK_TIMEOUT"`.
-- A user's roles and permissions are loaded in a single indexed query and cached in memory for
-  60 seconds (`cache: { ttl }`). The cache is per process: on several servers, a change made on
-  one server shows up on the others after the TTL.
+```ts
+import mysql from "mysql2/promise";
+import { createPermissions } from "permly";
+import { mysqlAdapter } from "permly/mysql";
 
-## Postgres
+const url = process.env.DATABASE_URL;
+if (!url) throw new Error("Set DATABASE_URL");
 
-Tested on Postgres 13 and 17. Uses [`pg`](https://www.npmjs.com/package/pg), which you install
-yourself:
-
-```sh
-npm install permly pg
+const perms = createPermissions({
+  adapter: mysqlAdapter(mysql.createPool(url)),
+  permissions: ["posts.create", "posts.edit"],
+  roles: ["editor"],
+});
+await perms.sync();
 ```
 
-### 1. Create the tables
+</details>
 
-`npx permly migrate` with a `postgres://` or `postgresql://` URL (see Quick start), or run the
-SQL yourself from the file `permly init` generated, or from code:
+- Pass a **pool** from `mysql2/promise`. With the callback API, pass `pool.promise()`.
+- Create the tables with `npx permly migrate`, the generated SQL file, or
+  `mysqlSchema(prefix)` / `mysqlSchemaStatements(prefix)` from `permly/mysql`.
+- Names and user ids are case-sensitive (`utf8mb4_bin`).
+- `syncRoles()` uses a named lock (`GET_LOCK`) per user; Galera clusters don't support it.
 
-```js
-import { postgresSchema, postgresSchemaStatements } from "permly/postgres";
+### Postgres
 
-console.log(postgresSchema()); // or postgresSchema("myapp_perm_", "auth")
-```
+Tested on Postgres 13 and 17. Uses the `pg` driver.
 
-The tables use `INT GENERATED ALWAYS AS IDENTITY` ids, foreign keys with `ON DELETE CASCADE`,
-and ordinary (case-sensitive) text columns. permly never adds a foreign key to your users
-table.
-
-### 2. Connect
+<!-- test: postgres -->
 
 ```js
 import pg from "pg";
@@ -264,144 +736,683 @@ import { createPermissions } from "permly";
 import { postgresAdapter } from "permly/postgres";
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-
 const perms = createPermissions({
   adapter: postgresAdapter(pool), // or postgresAdapter(pool, { prefix: "app_", schema: "auth" })
-  permissions: ["posts.create", "posts.edit", "posts.delete"],
-  roles: ["admin", "editor"],
+  permissions: ["posts.create", "posts.edit"],
+  roles: ["editor"],
 });
 
 await perms.sync();
+await perms.user(1).assignRole("editor");
+await perms.user(1).hasRole("editor"); // true
 ```
 
-Pass a `pg` **Pool**, not a single `Client`: transactions need their own connection from the
-pool. Any pg-compatible pool works, e.g. `@neondatabase/serverless`.
+<details>
+<summary>TypeScript</summary>
 
-### Schema option
+<!-- test: postgres -->
 
-By default the tables live in `public`. With `schema: "auth"` (and `npx permly migrate
---schema auth`) they live in `auth` instead. The schema must already exist
-(`CREATE SCHEMA auth;`); permly doesn't create it.
+```ts
+import pg from "pg";
+import { createPermissions } from "permly";
+import { postgresAdapter } from "permly/postgres";
 
-permly always writes schema-qualified, quoted names (`"auth"."perm_roles"`), so it never
-depends on the connection's `search_path`. Because the name is quoted it is case-sensitive:
-`schema: "Auth"` and `schema: "auth"` are different schemas.
-
-### PgBouncer and serverless poolers
-
-permly works behind PgBouncer in **transaction mode** (Supabase's pooler on port 6543, Neon's
-pooled connection string, RDS Proxy): it only sends unnamed statements (no named prepared
-statements), and its locks and settings are transaction-scoped (`pg_advisory_xact_lock`,
-`SET LOCAL`), so nothing leaks to the next client on the same server connection.
-
-Run `npx permly migrate` against the direct (non-pooled) connection string if your provider
-recommends that for schema changes.
-
-### SSL (Supabase, Neon, RDS, ...)
-
-SSL is handled by `pg`, so configure it the usual way: `?sslmode=require` in the URL, or
-`new pg.Pool({ connectionString, ssl: { ca } })` with your provider's CA certificate. If the
-server uses a certificate your machine doesn't trust and you accept that risk,
-`?sslmode=no-verify` encrypts without verifying. The same URL works for `npx permly migrate`.
-
-### Notes
-
-- `syncRoles()` takes a transaction-level advisory lock per user and `syncPermissions()`
-  locks the role's row, so concurrent calls are safe and never leave a mix of two lists.
-  Waiting for a lock gives up after 10 seconds with a `PermissionsError` (`code:
-"LOCK_TIMEOUT"`). Deadlocks and serialization failures are retried once.
-- Lists of any size are sent as one array parameter (`= ANY($1::text[])`).
-- If the tables or the schema are missing, errors say so and show the `npx permly migrate`
-  command to fix it.
-- TypeScript: the generated `src/permly.ts` uses `import pg from "pg"`, which needs
-  `esModuleInterop` (on by default in new projects) unless you use `"module": "NodeNext"`.
-
-## MongoDB
-
-Tested on MongoDB 7 and 8, standalone and replica set. Works with the native
-[`mongodb`](https://www.npmjs.com/package/mongodb) driver or with
-[`mongoose`](https://www.npmjs.com/package/mongoose), whichever your app already uses; permly
-imports neither.
-
-```sh
-npm install permly mongodb   # or: npm install permly mongoose
+const perms = createPermissions({
+  adapter: postgresAdapter(new pg.Pool({ connectionString: process.env.DATABASE_URL })),
+  permissions: ["posts.create", "posts.edit"],
+  roles: ["editor"],
+});
+await perms.sync();
 ```
 
-### 1. Create the collections and indexes
+</details>
 
-```sh
-DATABASE_URL=mongodb://user:password@localhost:27017/mydb npx permly migrate
-```
+- Pass a `pg` **Pool**, not a single `Client`. pg-compatible pools like
+  `@neondatabase/serverless` work too.
+- **Schema:** tables live in `public` unless you pass `schema: "auth"` (and
+  `npx permly migrate --schema auth`). The schema must already exist. Names are always
+  schema-qualified and quoted, so permly never depends on `search_path`.
+- **SSL** (Supabase, Neon, RDS, ...): configure it in `pg` as usual, e.g. `?sslmode=require` in
+  the URL or `ssl: { ca }` in the pool options. For a certificate your machine doesn't trust,
+  `?sslmode=no-verify` encrypts without verifying.
+- **PgBouncer** in transaction mode (Supabase's pooler, Neon's pooled URL, RDS Proxy) works:
+  permly only sends unnamed statements and uses transaction-scoped locks and settings. Run
+  `npx permly migrate` against the direct URL if your provider recommends it for schema
+  changes.
+- `postgresSchema(prefix, schema)` / `postgresSchemaStatements(...)` from `permly/postgres`
+  return the SQL for your own migration tool.
 
-This creates six collections (`perm_roles`, `perm_permissions`, `perm_role_permissions`,
-`perm_user_roles`, `perm_user_permissions` and `perm_locks`) with their unique indexes, and
-adds any index that is missing. Existing collections and indexes are never changed. You can
-also run the `.mjs` script `permly init` generated (`node migrations/..._permly_init.mjs`),
-or use `mongodbSetup(prefix)` from `permly/mongodb` in your own migration tool.
+### MongoDB
 
-permly doesn't create indexes when your app starts: building indexes on a large production
-collection is something to do on purpose. On first use it checks they exist, and if not,
-throws an error with the exact `npx permly migrate` command to run.
+Tested on MongoDB 7 and 8, standalone and replica set. Works with the native `mongodb` driver or
+with `mongoose`; permly imports neither.
 
-### 2. Connect
+With mongoose, pass `mongoose` itself (or a `Connection`) and connect as usual:
 
-With mongoose, pass `mongoose` itself (or a `Connection`). It uses your app's connection, so
-call `setupPermissions()` / `sync()` after `mongoose.connect()`:
+<!-- test: mongoose -->
 
 ```js
 import mongoose from "mongoose";
 import { createPermissions } from "permly";
 import { mongodbAdapter } from "permly/mongodb";
 
-export const perms = createPermissions({
+const perms = createPermissions({
   adapter: mongodbAdapter(mongoose),
-  permissions: ["posts.create", "posts.edit", "posts.delete"],
-  roles: ["admin", "editor"],
+  permissions: ["posts.create", "posts.edit"],
+  roles: ["editor"],
 });
 
 await mongoose.connect(process.env.DATABASE_URL);
 await perms.sync();
+await perms.user(1).assignRole("editor");
+await perms.user(1).hasRole("editor"); // true
 ```
 
-With the native driver, pass a database, not the client:
+<details>
+<summary>TypeScript</summary>
+
+<!-- test: mongoose -->
+
+```ts
+import mongoose from "mongoose";
+import { createPermissions } from "permly";
+import { mongodbAdapter } from "permly/mongodb";
+
+const perms = createPermissions({
+  adapter: mongodbAdapter(mongoose),
+  permissions: ["posts.create", "posts.edit"],
+  roles: ["editor"],
+});
+await mongoose.connect(process.env.DATABASE_URL ?? "");
+await perms.sync();
+```
+
+</details>
+
+With the native driver, pass a database (not the client):
+
+<!-- test: mongodb -->
 
 ```js
 import { MongoClient } from "mongodb";
+import { createPermissions } from "permly";
 import { mongodbAdapter } from "permly/mongodb";
 
 const client = new MongoClient(process.env.DATABASE_URL);
-const adapter = mongodbAdapter(client.db()); // the database named in the URL
+const perms = createPermissions({
+  adapter: mongodbAdapter(client.db()), // the database named in the URL
+  permissions: ["posts.create"],
+  roles: ["editor"],
+});
+
+await perms.sync();
+await perms.role("editor").givePermission("posts.create");
+await perms.user("64f0c0ffee").assignRole("editor");
+await perms.user("64f0c0ffee").can("posts.create"); // true
 ```
 
-### Atlas
+<details>
+<summary>TypeScript</summary>
 
-Use your `mongodb+srv://` connection string, with the database name in the path
-(`...mongodb.net/mydb`), for both your app and `npx permly migrate`. The database user needs
-the `readWrite` role on that database (it covers creating collections and indexes), and your
-machine's IP must be on the project's access list.
+<!-- test: mongodb -->
 
-### Standalone vs replica set
+```ts
+import { MongoClient } from "mongodb";
+import { createPermissions } from "permly";
+import { mongodbAdapter } from "permly/mongodb";
 
-- **Everywhere:** `syncRoles()` (per user) and `syncPermissions()` (per role) take a lease lock:
-  a document in `perm_locks` that expires after 10 seconds, so a crashed process can't block
-  others for longer than that. Concurrent syncs run one after the other and never leave a mix
-  of two lists. Waiting for a lock gives up after 10 seconds with a `PermissionsError`
-  (`code: "LOCK_TIMEOUT"`). A TTL index cleans up old lock documents.
-- **Replica sets and sharded clusters (including Atlas):** the sync also runs in a
-  transaction, so other readers never see it half done.
-- **Standalone servers** have no transactions. A sync is still safe against other syncs, but a
-  request that reads a user's roles at the exact moment of a sync can briefly see the old list,
-  an empty one, or the new one.
-- Individual grants and revokes (`assignRole`, `givePermission`, ...) are idempotent upserts
-  and deletes. Duplicate-key errors from two requests inserting the same link at once are
-  treated as success.
-- Deleting a role or permission removes its document first and then its links. If the
-  process stops in between, the leftover links point to nothing and every read ignores them;
-  re-creating a role with the same name does not bring them back.
+const client = new MongoClient(process.env.DATABASE_URL ?? "");
+const perms = createPermissions({
+  adapter: mongodbAdapter(client.db()),
+  permissions: ["posts.create"],
+  roles: ["editor"],
+});
+await perms.sync();
+```
 
-### Notes
+</details>
 
-- Names and user ids are case-sensitive (MongoDB's default binary comparison; permly never
-  sets a collation).
-- A user's roles and permissions are loaded with one aggregation (`$lookup` / `$unionWith`)
-  that only uses indexes.
+- **Collections and indexes:** `npx permly migrate` (or the generated `.mjs` script, or
+  `mongodbSetup(prefix)`) creates six collections, including `perm_locks`, and their indexes.
+  permly never builds indexes when your app starts; if they're missing it throws with the exact
+  command to run.
+- **Atlas:** use your `mongodb+srv://` URL with the database name in the path
+  (`...mongodb.net/mydb`). The database user needs `readWrite` on it, and your IP must be on the
+  access list.
+- **Replica sets and sharded clusters (including Atlas):** `syncRoles()` and `syncPermissions()`
+  run in a transaction, so no reader sees them half done.
+- **Standalone servers** have no transactions. Concurrent syncs are still safe (a lease lock runs
+  them one at a time), and they remove old entries before adding new ones, so a read that
+  happens mid-sync can briefly see _fewer_ roles, never extra ones.
+- Names and user ids are case-sensitive (permly never sets a collation).
+
+## Guides
+
+### Blog roles
+
+A blog with admins, editors (any post), authors (their own posts) and readers:
+
+```js
+import { createPermissions } from "permly";
+import { memoryAdapter } from "permly/memory";
+
+const perms = createPermissions({
+  adapter: memoryAdapter(),
+  permissions: [
+    "posts.create",
+    "posts.edit",
+    "posts.edit.own",
+    "posts.delete",
+    "posts.delete.own",
+    "posts.publish",
+    "comments.moderate",
+  ],
+  roles: ["admin", "editor", "author", "reader"],
+});
+
+const { createdRoles } = await perms.sync();
+if (createdRoles.length > 0) {
+  // First setup only: afterwards the database is the source of truth.
+  await perms.role("admin").givePermission("*");
+  await perms.role("editor").givePermission("posts.*", "comments.moderate");
+  await perms.role("author").givePermission("posts.create", "posts.edit.own", "posts.delete.own");
+}
+
+await perms.user("ana").assignRole("author");
+await perms.user("ana").canOwn("posts.delete", "ana"); // true
+await perms.user("ana").can("posts.publish"); // false
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import { createPermissions } from "permly";
+import { memoryAdapter } from "permly/memory";
+
+const perms = createPermissions({
+  adapter: memoryAdapter(),
+  permissions: ["posts.create", "posts.edit", "posts.edit.own", "posts.publish"],
+  roles: ["admin", "editor", "author"],
+});
+
+const { createdRoles } = await perms.sync();
+if (createdRoles.length > 0) {
+  await perms.role("admin").givePermission("*");
+  await perms.role("editor").givePermission("posts.*");
+  await perms.role("author").givePermission("posts.create", "posts.edit.own");
+}
+```
+
+</details>
+
+### Let users edit only their own posts
+
+Outside Express (a GraphQL resolver, a job, ...), use `canOwn` with the loaded record:
+
+```js
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+await perms.user(1).assignRole("editor");
+
+async function updatePost(userId, post, changes) {
+  if (!(await perms.user(userId).canOwn("posts.edit", post.userId))) {
+    throw new Error("You can only edit your own posts");
+  }
+  return { ...post, ...changes };
+}
+
+(await updatePost(1, { id: 7, userId: 1 }, { title: "New" })).title; // → "New"
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+
+interface Post {
+  id: number;
+  userId: number;
+  title?: string;
+}
+
+async function updatePost(userId: number, post: Post, changes: Partial<Post>): Promise<Post> {
+  if (!(await perms.user(userId).canOwn("posts.edit", post.userId))) {
+    throw new Error("You can only edit your own posts");
+  }
+  return { ...post, ...changes };
+}
+```
+
+</details>
+
+In Express, use [`guard.own()`](#ownership-in-routes-own).
+
+### Protect a group of admin routes
+
+Put the guard on a router once, instead of on every route:
+
+```js
+import express from "express";
+import { permlyExpress } from "permly/express";
+import { perms } from "./permly.js";
+
+const guard = permlyExpress(perms);
+const admin = express.Router();
+admin.use(guard.role("admin")); // every route below requires the admin role
+admin.get("/users", (req, res) => res.json([]));
+admin.delete("/posts/:id", (req, res) => res.json({ deleted: req.params.id }));
+
+const app = express();
+app.use("/admin", admin);
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import express from "express";
+import { permlyExpress } from "permly/express";
+import { perms } from "./permly.js";
+
+const guard = permlyExpress(perms);
+const admin = express.Router();
+admin.use(guard.role("admin"));
+admin.get("/users", (_req, res) => {
+  res.json([]);
+});
+
+const app = express();
+app.use("/admin", admin);
+```
+
+</details>
+
+### Promote a user
+
+```js
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+await perms.user(3).assignRole("viewer");
+
+// Promote: add the new role and drop the old one...
+await perms.user(3).assignRole("editor");
+await perms.user(3).removeRole("viewer");
+// ...or set the exact list in one step:
+await perms.user(3).syncRoles(["editor"]);
+
+await perms.user(3).getRoles(); // → ["editor"]
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+await perms.user(3).syncRoles(["editor"]);
+const roles: string[] = await perms.user(3).getRoles();
+```
+
+</details>
+
+The change applies right away, including in this process's cache.
+
+### Give one user an extra permission
+
+No need for a new role when one person needs one more thing:
+
+```js
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+await perms.user(4).assignRole("viewer");
+await perms.user(4).givePermission("posts.create"); // just for this user
+
+await perms.user(4).can("posts.create"); // true
+await perms.user(5).can("posts.create"); // false
+
+await perms.user(4).revokePermission("posts.create"); // and back
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+await perms.user(4).givePermission("posts.create");
+await perms.user(4).revokePermission("posts.create");
+```
+
+</details>
+
+### JWT authentication
+
+permly needs the user's id; where it comes from is up to you. With JSON Web Tokens (here with
+[`jsonwebtoken`](https://www.npmjs.com/package/jsonwebtoken)):
+
+```js
+import express from "express";
+import jwt from "jsonwebtoken";
+import { permlyExpress } from "permly/express";
+import { perms } from "./permly.js";
+
+const SECRET = process.env.JWT_SECRET ?? "change-me";
+
+function authenticate(req, res, next) {
+  const token = req.get("authorization")?.replace(/^Bearer /, "");
+  try {
+    if (token) req.user = { id: jwt.verify(token, SECRET).sub };
+  } catch {
+    // invalid or expired token: no user, so guards answer 401
+  }
+  next();
+}
+
+const app = express();
+app.use(authenticate);
+const guard = permlyExpress(perms);
+app.post("/posts", guard.permission("posts.create"), (req, res) => res.json({ ok: true }));
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import express, { type NextFunction, type Request, type Response } from "express";
+import jwt from "jsonwebtoken";
+import { permlyExpress } from "permly/express";
+import { perms } from "./permly.js";
+
+const SECRET = process.env.JWT_SECRET ?? "change-me";
+
+function authenticate(req: Request, _res: Response, next: NextFunction) {
+  const token = req.get("authorization")?.replace(/^Bearer /, "");
+  try {
+    if (token) Object.assign(req, { user: { id: jwt.verify(token, SECRET).sub } });
+  } catch {
+    // invalid or expired token: no user, so guards answer 401
+  }
+  next();
+}
+
+const app = express();
+app.use(authenticate);
+app.post("/posts", permlyExpress(perms).permission("posts.create"), (_req, res) => {
+  res.json({ ok: true });
+});
+```
+
+</details>
+
+### Show or hide buttons in the frontend
+
+The server stays in charge; the frontend just asks what to show. Send the user's permissions
+(expanded, so wildcards become real names):
+
+```js
+import express from "express";
+import { perms } from "./permly.js";
+
+const app = express();
+app.get("/me/permissions", async (req, res) => {
+  const permissions = await perms.user(req.user.id).getPermissions({ expand: true });
+  res.json({ permissions });
+});
+
+// In the browser:
+//   const { permissions } = await (await fetch("/me/permissions")).json();
+//   deleteButton.hidden = !permissions.includes("posts.delete");
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import express from "express";
+import { perms } from "./permly.js";
+
+const app = express();
+app.get("/me/permissions/:userId", async (req, res) => {
+  const permissions = await perms.user(String(req.params.userId)).getPermissions({ expand: true });
+  res.json({ permissions });
+});
+```
+
+</details>
+
+Always check again on the server: hiding a button is not security.
+
+### Multiple servers
+
+Each Node.js process has its own cache. A change made on server A is visible on server A
+immediately, and on server B once B's cache entry expires (60 seconds by default). Options:
+
+- Lower the TTL, e.g. `cache: { ttl: 5 }`, if changes must show up faster.
+- `cache: false` to always read from the database (one indexed query per check).
+- Call `perms.clearCache()` when you know something changed (e.g. from a message queue).
+
+```js
+import { createPermissions } from "permly";
+import { memoryAdapter } from "permly/memory";
+
+// e.g. one short TTL for all servers
+const perms = createPermissions({ adapter: memoryAdapter(), cache: { ttl: 5 } });
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import { createPermissions } from "permly";
+import { memoryAdapter } from "permly/memory";
+
+const perms = createPermissions({ adapter: memoryAdapter(), cache: false });
+```
+
+</details>
+
+A shared Redis cache is planned for a later version.
+
+### Testing your app
+
+Use the memory adapter in tests: no database, and each test gets a clean slate.
+
+```js
+import assert from "node:assert/strict";
+import { createPermissions } from "permly";
+import { memoryAdapter } from "permly/memory";
+
+async function makePerms() {
+  const perms = createPermissions({
+    adapter: memoryAdapter(),
+    permissions: ["posts.create", "posts.delete"],
+    roles: ["editor"],
+  });
+  await perms.sync();
+  await perms.role("editor").givePermission("posts.create");
+  return perms;
+}
+
+const perms = await makePerms();
+await perms.user(1).assignRole("editor");
+assert.equal(await perms.user(1).can("posts.create"), true);
+assert.equal(await perms.user(1).can("posts.delete"), false);
+```
+
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import assert from "node:assert/strict";
+import { createPermissions } from "permly";
+import { memoryAdapter } from "permly/memory";
+
+const perms = createPermissions({
+  adapter: memoryAdapter(),
+  permissions: ["posts.create"],
+  roles: ["editor"],
+});
+await perms.sync();
+assert.equal(await perms.user(1).can("posts.create"), false);
+```
+
+</details>
+
+## Coming from Laravel (spatie/laravel-permission)
+
+The ideas are the same; permly's calls are async and hang off `perms.user(id)`.
+
+| spatie/laravel-permission                | permly                                            |
+| ---------------------------------------- | ------------------------------------------------- |
+| `Permission::create(['name' => 'edit'])` | `permissions: [...]` in config + `perms.sync()`   |
+| `Role::create(['name' => 'writer'])`     | `roles: [...]` in config, or `perms.createRole()` |
+| `$role->givePermissionTo('edit')`        | `perms.role("writer").givePermission("edit")`     |
+| `$role->revokePermissionTo('edit')`      | `perms.role("writer").revokePermission("edit")`   |
+| `$role->syncPermissions([...])`          | `perms.role("writer").syncPermissions([...])`     |
+| `$user->assignRole('writer')`            | `perms.user(id).assignRole("writer")`             |
+| `$user->removeRole('writer')`            | `perms.user(id).removeRole("writer")`             |
+| `$user->syncRoles([...])`                | `perms.user(id).syncRoles([...])`                 |
+| `$user->givePermissionTo('edit')`        | `perms.user(id).givePermission("edit")`           |
+| `$user->can('edit')` / `hasPermissionTo` | `await perms.user(id).can("edit")`                |
+| `$user->hasAnyPermission([...])`         | `perms.user(id).canAny([...])`                    |
+| `$user->hasAllPermissions([...])`        | `perms.user(id).canAll([...])`                    |
+| `$user->hasRole('writer')`               | `perms.user(id).hasRole("writer")`                |
+| `$user->hasAnyRole([...])`               | `perms.user(id).hasAnyRole([...])`                |
+| `$user->getAllPermissions()`             | `perms.user(id).getPermissions({ expand: true })` |
+| `$user->getRoleNames()`                  | `perms.user(id).getRoles()`                       |
+| `middleware('permission:edit')`          | `requirePermission(perms, "edit")`                |
+| `middleware('role:admin')`               | `requireRole(perms, "admin")`                     |
+| Wildcard permissions (`posts.*`)         | Built in                                          |
+| Policies for "own" records               | `canOwn()` / `guard.own()`                        |
+| Teams                                    | Planned (the `team_id` column is already there)   |
+
+## API reference
+
+### `createPermissions(config)`
+
+| Option        | Type                         | Default       |                                              |
+| ------------- | ---------------------------- | ------------- | -------------------------------------------- |
+| `adapter`     | adapter                      | required      | `memoryAdapter()`, `mysqlAdapter(pool)`, ... |
+| `permissions` | `string[]`                   | `[]`          | created by `sync()`; typed in TypeScript     |
+| `roles`       | `string[]`                   | `[]`          | created by `sync()`; typed in TypeScript     |
+| `cache`       | `{ ttl?: number }` / `false` | `{ ttl: 60 }` | seconds                                      |
+| `strict`      | `boolean`                    | `true`        | unknown names in checks throw                |
+
+Returns `perms` with: `sync()`, `user(id)`, `role(name)`, `createRole(...names)`,
+`createPermission(...names)`, `deleteRole(name)`, `deletePermission(name)`, `getAllRoles()`,
+`getAllPermissions()`, `clearCache()`.
+
+### `perms.user(id)`
+
+| Method                                                     | Returns             |
+| ---------------------------------------------------------- | ------------------- |
+| `assignRole(...roles)`, `removeRole(...roles)`             | `Promise<void>`     |
+| `syncRoles(roles)`                                         | `Promise<void>`     |
+| `givePermission(...names)`, `revokePermission(...names)`   | `Promise<void>`     |
+| `can(name)`, `canAny(names)`, `canAll(names)`              | `Promise<boolean>`  |
+| `canOwn(name, ownerId)`                                    | `Promise<boolean>`  |
+| `authorize(name or names)`                                 | throws if denied    |
+| `hasRole(role)`, `hasAnyRole(roles)`, `hasAllRoles(roles)` | `Promise<boolean>`  |
+| `getRoles()`                                               | `Promise<string[]>` |
+| `getPermissions({ expand? })`                              | `Promise<string[]>` |
+
+### `perms.role(name)`
+
+`givePermission(...names)`, `revokePermission(...names)`, `syncPermissions(names)`,
+`getPermissions({ expand? })`.
+
+### Adapters
+
+| Import            | Factory                                     | Also exports                                     |
+| ----------------- | ------------------------------------------- | ------------------------------------------------ |
+| `permly/memory`   | `memoryAdapter()`                           |                                                  |
+| `permly/mysql`    | `mysqlAdapter(pool, { prefix })`            | `mysqlSchema()`, `mysqlSchemaStatements()`       |
+| `permly/postgres` | `postgresAdapter(pool, { prefix, schema })` | `postgresSchema()`, `postgresSchemaStatements()` |
+| `permly/mongodb`  | `mongodbAdapter(db, { prefix })`            | `mongodbSetup()`                                 |
+
+Writing your own adapter? Implement the `PermissionAdapter` interface (exported as a type from
+`permly`) and run the shared test suite against it; see [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+### CLI
+
+```text
+npx permly init       Create the migration file and a starter src/permly.(js|ts)
+npx permly migrate    Create the tables / collections in DATABASE_URL (never changes existing ones)
+
+--db <name>           mysql, postgres or mongodb
+--prefix <prefix>     Table prefix, default perm_
+--schema <name>       Postgres schema, default public (must already exist)
+--out <dir>           init: folder for the migration file, default migrations
+--ts / --js           init: language of the starter file (default: detected)
+--esm / --cjs         init: module format for JavaScript (default: detected)
+--force               init: overwrite existing files
+--url <url>           migrate: database URL instead of DATABASE_URL
+--yes                 migrate: don't ask for confirmation
+```
+
+In CI nothing is ever prompted: use `npx permly init --db mysql` and `npx permly migrate --yes`.
+`migrate` shows the target database but never prints its password.
+
+## FAQ and troubleshooting
+
+**`Permission "x" does not exist. It is listed in your config but not in the database. Did you
+run perms.sync()?`** Call `perms.sync()` (or the generated `setupPermissions()`) once at
+startup, before any check.
+
+**`Permission "posts.edt" does not exist. Did you mean "posts.edit"?`** A typo in a name. In
+TypeScript, list your names in `createPermissions()` to catch these at compile time. If unknown
+names are expected (e.g. names coming from user input), use `strict: false` so checks return
+`false` instead.
+
+**`permly's tables were not found` / `collections or indexes are missing`** Run
+`npx permly migrate` (with the same `--prefix`, and `--schema` for Postgres).
+
+**`LOCK_TIMEOUT`** Two `syncRoles()` calls for the same user (or `syncPermissions()` for the
+same role) overlapped for more than 10 seconds. It's rare, usually a very slow database. Retry,
+or avoid syncing the same user from many places at once.
+
+**Galera cluster (MySQL/MariaDB)** `syncRoles()` uses `GET_LOCK`, which Galera doesn't
+support. Everything else works.
+
+**Prisma shows drift after `npx permly migrate`** Prisma treats tables it doesn't manage as
+drift and may offer to reset the database. Don't run permly's SQL alongside `prisma migrate` in
+the same database for now; keep permly's tables in a database Prisma doesn't migrate. Proper
+Prisma support is planned.
+
+**TypeScript: `Module has no default export` for `pg` or `mongoose`** Enable `esModuleInterop`
+in `tsconfig.json` (it's on by default in new projects), or use `"module": "NodeNext"`.
+
+**TypeScript can't find `permly/mysql` (or another subpath)** Use a recent TypeScript. Old
+`moduleResolution: "node"` setups are supported, but `"NodeNext"` or `"Bundler"` is
+recommended.
+
+**Does permly work without Express?** Yes. The core works anywhere (Fastify, Koa, Next.js,
+GraphQL, background jobs); the Express middleware is an optional extra.
+
+**Does permly change my users table?** No. It only uses its own `perm_*` tables and stores your
+user ids as strings.
+
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, tests and how to
+add an adapter. Please report security issues privately, as described in
+[SECURITY.md](./SECURITY.md).
+
+## Support
+
+If permly saves you time, you can [sponsor its development](https://github.com/sponsors/PJPhukan),
+star the repository, or tell a friend. Questions and ideas are welcome in
+[GitHub Discussions](https://github.com/PJPhukan/permly/discussions).
+
+## License
+
+[MIT](./LICENSE) © 2026 Paragjyoti Phukan

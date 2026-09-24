@@ -1,0 +1,43 @@
+name: Release
+
+# Publishes to npm when a version tag is pushed, e.g.:
+#   npm version 0.1.0 --no-git-tag-version  (or edit package.json)
+#   git commit -am "Release 0.1.0" && git tag v0.1.0 && git push origin main v0.1.0
+# Needs the NPM_TOKEN repository secret (an npm "Automation" token).
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+  id-token: write # for npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - run: npm ci
+      - name: Tag matches package.json version
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $version" >&2
+            exit 1
+          fi
+      - name: Start databases
+        run: docker compose up -d --wait
+      - name: Full check with every database
+        run: npm run check
+        env:
+          PERMLY_REQUIRE_DB: "1"
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
