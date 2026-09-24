@@ -1,21 +1,84 @@
-# permly
+<h1 align="center">permly</h1>
 
-**Simple roles & permissions for Node.js.** Install, run one command, and check permissions in
-minutes. Express middleware included; works with MySQL, MariaDB, Postgres and MongoDB.
+<p align="center">
+  <strong>Simple roles &amp; permissions for Node.js. Inspired by Laravel Spatie.</strong>
+</p>
 
-[![npm version](https://img.shields.io/npm/v/permly.svg)](https://www.npmjs.com/package/permly)
-[![license: MIT](https://img.shields.io/npm/l/permly.svg)](./LICENSE)
-[![CI](https://github.com/PJPhukan/permly/actions/workflows/ci.yml/badge.svg)](https://github.com/PJPhukan/permly/actions/workflows/ci.yml)
-[![install size](https://packagephobia.com/badge?p=permly)](https://packagephobia.com/result?p=permly)
+<p align="center">
+  <a href="https://www.npmjs.com/package/permly"><img src="https://img.shields.io/npm/v/permly?color=cb3837&amp;logo=npm" alt="npm version"></a>
+  <a href="https://github.com/PJPhukan/permly/actions/workflows/ci.yml"><img src="https://github.com/PJPhukan/permly/actions/workflows/ci.yml/badge.svg" alt="CI status"></a>
+  <a href="https://github.com/PJPhukan/permly/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+  <a href="https://www.npmjs.com/package/permly"><img src="https://img.shields.io/npm/dm/permly" alt="npm downloads"></a>
+  <a href="https://bundlephobia.com/package/permly"><img src="https://img.shields.io/bundlephobia/minzip/permly" alt="bundle size"></a>
+  <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-ready-3178c6?logo=typescript&amp;logoColor=white" alt="TypeScript ready"></a>
+</p>
 
-<!-- test: skip (teaser) -->
+permly adds **roles and permissions** to your Node.js app. Users get roles like `editor`, roles
+get permissions like `posts.create`, and you check them with one line. It is for developers
+who want access control that works in minutes: run one command, and permly sets up the tables
+and a ready-to-use file for your database.
+
+<!-- test: memory (the "at a glance" example) -->
 
 ```js
-await perms.user(user.id).assignRole("editor");
-await perms.user(user.id).can("posts.create"); // true
+// npx permly init  → creates src/permly.js with your roles and permissions
+import express from "express";
+import { requirePermission } from "permly/express";
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+await perms.user(1).assignRole("editor");
+await perms.user(1).can("posts.create"); // true
+
+const app = express();
+app.post("/posts", requirePermission(perms, "posts.create"), (req, res) => res.json({ ok: true }));
 ```
 
+<details>
+<summary>TypeScript</summary>
+
+```ts
+import express from "express";
+import { requirePermission } from "permly/express";
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+await perms.user(1).assignRole("editor");
+const allowed: boolean = await perms.user(1).can("posts.create");
+
+const app = express();
+app.post("/posts", requirePermission(perms, "posts.create"), (_req, res) => {
+  res.json({ ok: true });
+});
+```
+
+</details>
+
+<p align="center">
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#core-concepts">Docs</a> ·
+  <a href="https://github.com/PJPhukan/permly/tree/main/examples">Examples</a> ·
+  <a href="#coming-from-laravel-spatielaravel-permission">Coming from Spatie</a> ·
+  <a href="https://github.com/sponsors/PJPhukan">Sponsor</a>
+</p>
+
+## Features
+
+- **Zero runtime dependencies.** Small, and nothing extra to install or audit.
+- **TypeScript autocomplete for your own names.** A typo like `"posts.edt"` is a compile error.
+- **Your database:** MySQL, MariaDB, Postgres and MongoDB (plus an in-memory adapter for tests).
+- **Express middleware** that answers 401, 403 and 404 for you.
+- **Setup with one command:** `npx permly init` and `npx permly migrate`.
+- **Built-in cache**, so checks are fast.
+- **Wildcards:** `posts.*` for all post permissions, `*` for everything.
+- **Ownership checks:** "editors may edit only their own posts" in one line.
+- **Safe under concurrency:** parallel changes never leave mixed or duplicate data.
+- **Works with plain JavaScript** too: `import` or `require`, no build step needed.
+
+## Contents
+
 - [Why permly?](#why-permly)
+- [Comparison](#comparison)
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Core concepts](#core-concepts)
@@ -26,28 +89,41 @@ await perms.user(user.id).can("posts.create"); // true
 - [Coming from Laravel (spatie/laravel-permission)](#coming-from-laravel-spatielaravel-permission)
 - [API reference](#api-reference)
 - [FAQ and troubleshooting](#faq-and-troubleshooting)
+- [Support permly](#support-permly) · [Contributing](#contributing) · [Security](#security) ·
+  [License](#license)
 
 ## Why permly?
 
-Most apps start with `if (user.isAdmin)`. Then come editors, then "editors can only edit their
-own posts", then one customer who needs one extra permission... and the checks end up
-scattered and inconsistent. permly gives you one clear model instead:
+Most apps start with `if (user.isAdmin)`. Later come editors, then "editors may edit only
+their own posts", then one customer who needs one extra permission. The checks end up in many
+places, and they don't always agree. permly gives you one clear model instead:
 
-- **Roles and permissions**, stored in your database: users get roles, roles get permissions,
-  and a user can get an extra permission directly.
-- **One-line checks** everywhere: `can`, `hasRole`, `canOwn` for "only your own", and
-  wildcards like `posts.*`.
-- **Express middleware** that answers 401 / 403 / 404 for you.
-- **Typos are caught**: TypeScript autocompletes permission names, and at runtime an unknown
-  name throws `Permission "posts.edt" does not exist. Did you mean "posts.edit"?`
-- **Easy start**: `npx permly init` writes the setup for your project and database.
-- **Small and safe**: zero runtime dependencies, built-in caching, safe under concurrency, and
-  it never adds foreign keys to your own tables.
+- **Roles and permissions live in your database.** Users get roles, roles get permissions, and
+  a user can also get one extra permission directly.
+- **Checks are one line:** `can`, `hasRole`, and `canOwn` for "only your own".
+- **Mistakes show up early.** An unknown name throws
+  `Permission "posts.edt" does not exist. Did you mean "posts.edit"?`
+- **It stays out of your way.** permly never changes your users table and adds no foreign keys
+  to it.
 
-Inspired by [spatie/laravel-permission](https://github.com/spatie/laravel-permission), with a
-smaller API.
+## Comparison
+
+Different tools solve different problems. This table helps you pick the right one.
+
+|                                      | permly                                         | By hand                | [CASL](https://casl.js.org)                        | [Casbin](https://casbin.org)               |
+| ------------------------------------ | ---------------------------------------------- | ---------------------- | -------------------------------------------------- | ------------------------------------------ |
+| **Model**                            | Roles and permissions (RBAC)                   | Whatever you build     | Rules on subjects and fields (ABAC)                | Configurable models (ACL, RBAC, ABAC, ...) |
+| **Setup time**                       | Minutes (`npx permly init`)                    | Days, then maintenance | Minutes to define rules in code                    | Write a model file, then pick an adapter   |
+| **Database tables included**         | Yes: MySQL, Postgres, MongoDB                  | You design them        | No, rules live in code (storing them is up to you) | Yes, through adapters (a policy table)     |
+| **CLI for setup**                    | Yes                                            | No                     | No                                                 | No                                         |
+| **TypeScript autocomplete of names** | Yes, from your config                          | If you build it        | Yes, for typed actions and subjects                | No, policies are strings                   |
+| **Express middleware**               | Included                                       | You write it           | You write a small one                              | Yes (`express-authz`)                      |
+| **Learning curve**                   | Low                                            | Low at first           | Medium                                             | Medium (its model language)                |
+| **Best for**                         | Classic roles and permissions in a Node.js app | Very small apps        | Fine-grained rules shared by frontend and backend  | Complex or custom policies, many languages |
 
 ## Install
+
+Install permly, and the driver for your database.
 
 ```sh
 npm install permly
@@ -66,6 +142,12 @@ permly works with `import` and `require`, in JavaScript and TypeScript, on Node.
 22 or 24 is recommended: 18 and 20 are end-of-life, though permly is still tested on them.
 
 ## Quick start
+
+This section takes you from an empty project to your first permission check.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/PJPhukan/permly/main/.github/assets/demo.svg" alt="Terminal recording: npx permly init creates src/permly.js and a migration file, then npx permly migrate creates the tables" width="820">
+</p>
 
 **1. Generate the setup** (asks a few questions, detects TypeScript and ES modules):
 
@@ -272,6 +354,8 @@ await perms.user(42).revokePermission("posts.delete");
 
 ### Checks
 
+Use checks to decide what a user may do. Each one returns `true` or `false`, except `authorize()`, which throws.
+
 ```js
 import { perms, setupPermissions } from "./permly.js";
 
@@ -448,6 +532,8 @@ The cache lives in each Node.js process. With several servers, see
 
 ### Errors
 
+permly throws typed errors, so you can tell a denied user from a typo or a bad argument.
+
 | Error                     | When                                                   | Extra fields             |
 | ------------------------- | ------------------------------------------------------ | ------------------------ |
 | `PermissionDeniedError`   | `authorize()` fails                                    | `missing: string[]`      |
@@ -495,7 +581,8 @@ try {
 
 ## Express
 
-Works with Express 4 and 5. Your auth middleware sets `req.user` (with an `id`); permly reads
+Use the middleware to protect routes: it checks the user before your handler runs. It works
+with Express 4 and 5. Your auth middleware sets `req.user` (with an `id`); permly reads
 `req.user.id` by default.
 
 ```js
@@ -633,6 +720,8 @@ app.put(
 
 ### Options
 
+Use options when your user id lives somewhere else (a session, a token), or to change the 401 / 403 / 404 responses.
+
 ```js
 import { permlyExpress } from "permly/express";
 import { perms } from "./permly.js";
@@ -675,7 +764,8 @@ foreign keys to your own tables, and user ids are stored as strings (up to 64 ch
 
 ### MySQL / MariaDB
 
-Tested on MySQL 8.4 (and 5.7) and MariaDB 11. Uses the `mysql2` driver.
+Use this if your app uses MySQL or MariaDB. It uses the `mysql2` driver, and is tested on MySQL
+8.4 (and 5.7) and MariaDB 11.
 
 <!-- test: mysql -->
 
@@ -727,7 +817,8 @@ await perms.sync();
 
 ### Postgres
 
-Tested on Postgres 13 and 17. Uses the `pg` driver.
+Use this if your app uses Postgres (including Supabase, Neon and RDS). It uses the `pg` driver,
+and is tested on Postgres 13 and 17.
 
 <!-- test: postgres -->
 
@@ -785,8 +876,8 @@ await perms.sync();
 
 ### MongoDB
 
-Tested on MongoDB 7 and 8, standalone and replica set. Works with the native `mongodb` driver or
-with `mongoose`; permly imports neither.
+Use this if your app uses MongoDB, with the native `mongodb` driver or with `mongoose`. permly
+imports neither. It is tested on MongoDB 7 and 8, standalone and replica set.
 
 With mongoose, pass `mongoose` itself (or a `Connection`) and connect as usual:
 
@@ -888,6 +979,8 @@ await perms.sync();
 - Names and user ids are case-sensitive (permly never sets a collation).
 
 ## Guides
+
+Short recipes for common tasks. Each one is a complete example you can copy.
 
 ### Blog roles
 
@@ -1034,6 +1127,8 @@ app.use("/admin", admin);
 </details>
 
 ### Promote a user
+
+Use this when a user's job changes, for example from viewer to editor.
 
 ```js
 import { perms, setupPermissions } from "./permly.js";
@@ -1298,7 +1393,11 @@ The ideas are the same; permly's calls are async and hang off `perms.user(id)`.
 
 ## API reference
 
+Every public function in one place. The sections above explain them with examples.
+
 ### `createPermissions(config)`
+
+Creates your `perms` object. Call it once and share the result.
 
 | Option        | Type                         | Default       |                                              |
 | ------------- | ---------------------------- | ------------- | -------------------------------------------- |
@@ -1314,6 +1413,8 @@ Returns `perms` with: `sync()`, `user(id)`, `role(name)`, `createRole(...names)`
 
 ### `perms.user(id)`
 
+Everything about one user: their roles, extra permissions and checks.
+
 | Method                                                     | Returns             |
 | ---------------------------------------------------------- | ------------------- |
 | `assignRole(...roles)`, `removeRole(...roles)`             | `Promise<void>`     |
@@ -1328,10 +1429,14 @@ Returns `perms` with: `sync()`, `user(id)`, `role(name)`, `createRole(...names)`
 
 ### `perms.role(name)`
 
+Everything about one role: its permissions.
+
 `givePermission(...names)`, `revokePermission(...names)`, `syncPermissions(names)`,
 `getPermissions({ expand? })`.
 
 ### Adapters
+
+An adapter connects permly to your database. Pick the one for your database.
 
 | Import            | Factory                                     | Also exports                                     |
 | ----------------- | ------------------------------------------- | ------------------------------------------------ |
@@ -1341,9 +1446,11 @@ Returns `perms` with: `sync()`, `user(id)`, `role(name)`, `createRole(...names)`
 | `permly/mongodb`  | `mongodbAdapter(db, { prefix })`            | `mongodbSetup()`                                 |
 
 Writing your own adapter? Implement the `PermissionAdapter` interface (exported as a type from
-`permly`) and run the shared test suite against it; see [CONTRIBUTING.md](./CONTRIBUTING.md).
+`permly`) and run the shared test suite against it; see [CONTRIBUTING.md](https://github.com/PJPhukan/permly/blob/main/CONTRIBUTING.md).
 
 ### CLI
+
+The `permly` command sets up your project and database.
 
 ```text
 npx permly init       Create the migration file and a starter src/permly.(js|ts)
@@ -1364,6 +1471,8 @@ In CI nothing is ever prompted: use `npx permly init --db mysql` and `npx permly
 `migrate` shows the target database but never prints its password.
 
 ## FAQ and troubleshooting
+
+Common questions and error messages, with the fix for each.
 
 **`Permission "x" does not exist. It is listed in your config but not in the database. Did you
 run perms.sync()?`** Call `perms.sync()` (or the generated `setupPermissions()`) once at
@@ -1402,18 +1511,23 @@ GraphQL, background jobs); the Express middleware is an optional extra.
 **Does permly change my users table?** No. It only uses its own `perm_*` tables and stores your
 user ids as strings.
 
+## Support permly
+
+permly is free and open source. If it saves you time, please consider
+[sponsoring its development on GitHub](https://github.com/sponsors/PJPhukan). A star on the
+repository or a mention to a friend helps too. Questions and ideas are welcome in
+[GitHub Discussions](https://github.com/PJPhukan/permly/discussions).
+
 ## Contributing
 
-Contributions are welcome! See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, tests and how to
-add an adapter. Please report security issues privately, as described in
-[SECURITY.md](./SECURITY.md).
+Contributions are welcome: bug reports, docs, tests and new adapters. See
+[CONTRIBUTING.md](https://github.com/PJPhukan/permly/blob/main/CONTRIBUTING.md) for setup, tests and how to add an adapter.
 
-## Support
+## Security
 
-If permly saves you time, you can [sponsor its development](https://github.com/sponsors/PJPhukan),
-star the repository, or tell a friend. Questions and ideas are welcome in
-[GitHub Discussions](https://github.com/PJPhukan/permly/discussions).
+Please report security issues privately, not in public issues. See
+[SECURITY.md](https://github.com/PJPhukan/permly/blob/main/SECURITY.md) for how, and what to expect.
 
 ## License
 
-[MIT](./LICENSE) © 2026 Paragjyoti Phukan
+[MIT](https://github.com/PJPhukan/permly/blob/main/LICENSE) © 2026 Paragjyoti Phukan
