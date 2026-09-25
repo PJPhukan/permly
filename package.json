@@ -1,7 +1,7 @@
 {
   "name": "permly",
   "version": "0.1.0",
-  "description": "Simple roles & permissions for Node.js: check permissions in minutes, with Express middleware and adapters for MySQL, Postgres and MongoDB. Zero dependencies.",
+  "description": "Simple, type-safe roles & permissions for Node.js. Works with MySQL, Postgres and MongoDB.",
   "keywords": [
     "permissions",
     "roles",
