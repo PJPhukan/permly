@@ -614,6 +614,24 @@ if (perms.isPermission(permission)) {
 }
 ```
 
+#### When config is empty
+
+If you create permly without a config (dynamic schemas), `isPermission()` and `isRole()` return `false` until the database catalog is loaded. Once loaded (via `sync()`, a check, or any other database call), they check the cached catalog:
+
+```js
+import { createPermissions } from "permly";
+import { MemoryAdapter } from "permly/adapter/memory";
+
+const perms = createPermissions({ adapter: new MemoryAdapter() });
+
+// Before sync(): always returns false (cache is empty)
+perms.isPermission("posts.edit"); // → false
+
+// After sync(): checks the cached catalog
+await perms.sync();
+perms.isPermission("posts.edit"); // → true (if in database)
+```
+
 For types, extract the configured names with `InferPermission` and `InferRole`:
 
 ```ts
