@@ -632,15 +632,10 @@ await perms.sync();
 perms.isPermission("posts.edit"); // → true (if in database)
 ```
 
-For types, extract the configured names with `InferPermission` and `InferRole`:
+For types, import the generated Permission and Role types from your permly setup file:
 
 ```ts
-import type { InferPermission, InferRole } from "permly";
-import { perms } from "./permly.js";
-
-// Type definition from your perms instance (from src/permly.ts)
-type Permission = InferPermission<typeof perms>;
-type Role = InferRole<typeof perms>;
+import { perms, type Permission, type Role } from "./permly.js";
 
 // Now use these types for request bodies, database queries, etc.
 interface UpdateRequest {
@@ -649,7 +644,7 @@ interface UpdateRequest {
 }
 ```
 
-This pattern is useful for:
+The generated `permly.js` exports these types automatically using `InferPermission` and `InferRole`. Use them for:
 - Validating permission names from API requests
 - Checking database values before using them
 - Type-checking dynamic names in tests
