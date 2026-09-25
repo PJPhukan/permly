@@ -33,6 +33,14 @@ export class TtlCache<V> {
     this.generation++;
   }
 
+  /** Get the cached value if it exists and hasn't expired, or undefined. Never loads. */
+  cached(key: string = "catalog"): V | undefined {
+    const entry = this.entries.get(key);
+    if (entry && entry.expires > Date.now()) return entry.value;
+    if (entry) this.entries.delete(key);
+    return undefined;
+  }
+
   private store(key: string, value: V): void {
     this.entries.delete(key); // re-insert so Map order stays oldest-first
     this.entries.set(key, { value, expires: Date.now() + this.ttlMs });

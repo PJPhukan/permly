@@ -17,7 +17,7 @@ export class Engine {
   readonly strict: boolean;
   private readonly configRoles: ReadonlySet<string>;
   private readonly configPermissions: ReadonlySet<string>;
-  private readonly catalogCache: TtlCache<Catalog>;
+  readonly catalogCache: TtlCache<Catalog>;
   private readonly grantsCache: TtlCache<Grants>;
 
   constructor(config: ResolvedConfig) {

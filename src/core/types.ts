@@ -1,6 +1,12 @@
 /** A user id: integer, string (e.g. UUID), or a Mongo ObjectId. Stored as a string. */
 export type UserId = string | number | { toHexString(): string };
 
+/** Extract the permission type P from `typeof perms`. Example: `type Permission = InferPermission<typeof perms>` */
+export type InferPermission<T> = T extends Permissions<infer P, any> ? P : never;
+
+/** Extract the role type R from `typeof perms`. Example: `type Role = InferRole<typeof perms>` */
+export type InferRole<T> = T extends Permissions<any, infer R> ? R : never;
+
 // Depth counter for Wildcard: at most 5 prefix levels ("a.*" … "a.b.c.d.e.*") are typed, which
 // keeps type-checking fast for large configs. Deeper wildcards still work at runtime.
 type Prev = [never, 0, 1, 2, 3, 4];
@@ -108,6 +114,11 @@ export interface Permissions<P extends string = string, R extends string = strin
 
   /** Empties the in-process cache. Changes made through this instance already do this. */
   clearCache(): void;
+
+  /** Type guard: returns true if value is a configured permission name. Never throws. */
+  isPermission(value: unknown): value is P;
+  /** Type guard: returns true if value is a configured role name. Never throws. */
+  isRole(value: unknown): value is R;
 }
 
 export interface RoleScope<P extends string = string> {

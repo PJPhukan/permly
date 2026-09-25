@@ -68,6 +68,24 @@ export function createPermissions<const P extends string = string, const R exten
     },
 
     clearCache: () => engine.invalidateAll(),
+
+    isPermission(value): value is P {
+      if (typeof value !== "string") return false;
+      if (resolved.permissions.length > 0) {
+        return resolved.permissions.includes(value as P);
+      }
+      // No config: check catalog (may be stale, but that's ok for a type guard)
+      return engine.catalogCache.cached()?.permissions.has(value) ?? false;
+    },
+
+    isRole(value): value is R {
+      if (typeof value !== "string") return false;
+      if (resolved.roles.length > 0) {
+        return resolved.roles.includes(value as R);
+      }
+      // No config: check catalog (may be stale, but that's ok for a type guard)
+      return engine.catalogCache.cached()?.roles.has(value) ?? false;
+    },
   };
 
   return permissions as Permissions<P, R>;

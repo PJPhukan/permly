@@ -579,6 +579,64 @@ try {
 
 </details>
 
+## Dynamic names (from requests or the database)
+
+When permission or role names come from user input, the database, or API requests, use the type guards `isPermission()` and `isRole()` to validate them before passing them to permly methods. They never throw, even in strict mode.
+
+<!-- test: skip -->
+
+```js
+// Example: user input from a request
+const permission = req.body.permission; // any value, probably a string
+
+if (perms.isPermission(permission)) {
+  // Now TypeScript knows it's a valid permission, and permly methods accept it
+  const allowed = await perms.user(42).can(permission);
+}
+```
+
+Running example:
+
+<!-- test: memory -->
+
+```js
+import { perms, setupPermissions } from "./permly.js";
+
+await setupPermissions();
+
+// Validate a permission name (e.g., from an API request)
+const permission = "posts.edit";
+
+if (perms.isPermission(permission)) {
+  const allowed = await perms.user(1).can(permission);
+  // User 1 has no permissions yet
+  allowed; // → false
+}
+```
+
+For types, extract the configured names with `InferPermission` and `InferRole`:
+
+```ts
+import type { InferPermission, InferRole } from "permly";
+import { perms } from "./permly.js";
+
+// Type definition from your perms instance (from src/permly.ts)
+type Permission = InferPermission<typeof perms>;
+type Role = InferRole<typeof perms>;
+
+// Now use these types for request bodies, database queries, etc.
+interface UpdateRequest {
+  permission: Permission;
+  role: Role;
+}
+```
+
+This pattern is useful for:
+- Validating permission names from API requests
+- Checking database values before using them
+- Type-checking dynamic names in tests
+- Building UI dropdowns without duplicating the permission list
+
 ## Express
 
 Use the middleware to protect routes: it checks the user before your handler runs. It works

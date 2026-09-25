@@ -382,3 +382,112 @@ describe("strict mode", () => {
     await expect(perms.user(1).assignRole("admin")).rejects.toThrow("Did you run perms.sync()?");
   });
 });
+
+describe("type guards", () => {
+  it("isPermission returns true for configured permissions", async () => {
+    const perms = createPermissions({
+      adapter: memoryAdapter(),
+      permissions: ["posts.edit", "posts.create"],
+      roles: ["admin"],
+    });
+    await perms.sync();
+    expect(perms.isPermission("posts.edit")).toBe(true);
+    expect(perms.isPermission("posts.create")).toBe(true);
+    expect(perms.isPermission("posts.delete")).toBe(false);
+    expect(perms.isPermission("unknown")).toBe(false);
+  });
+
+  it("isRole returns true for configured roles", async () => {
+    const perms = createPermissions({
+      adapter: memoryAdapter(),
+      permissions: ["posts.edit"],
+      roles: ["admin", "editor"],
+    });
+    await perms.sync();
+    expect(perms.isRole("admin")).toBe(true);
+    expect(perms.isRole("editor")).toBe(true);
+    expect(perms.isRole("viewer")).toBe(false);
+    expect(perms.isRole("unknown")).toBe(false);
+  });
+
+  it("isPermission returns false for non-strings", async () => {
+    const perms = createPermissions({
+      adapter: memoryAdapter(),
+      permissions: ["posts.edit"],
+      roles: ["admin"],
+    });
+    await perms.sync();
+    expect(perms.isPermission(123)).toBe(false);
+    expect(perms.isPermission(null)).toBe(false);
+    expect(perms.isPermission(undefined)).toBe(false);
+    expect(perms.isPermission(true)).toBe(false);
+    expect(perms.isPermission({})).toBe(false);
+    expect(perms.isPermission([])).toBe(false);
+  });
+
+  it("isRole returns false for non-strings", async () => {
+    const perms = createPermissions({
+      adapter: memoryAdapter(),
+      permissions: ["posts.edit"],
+      roles: ["admin"],
+    });
+    await perms.sync();
+    expect(perms.isRole(123)).toBe(false);
+    expect(perms.isRole(null)).toBe(false);
+    expect(perms.isRole(undefined)).toBe(false);
+    expect(perms.isRole(true)).toBe(false);
+    expect(perms.isRole({})).toBe(false);
+    expect(perms.isRole([])).toBe(false);
+  });
+
+  it("isPermission never throws, even in strict mode", async () => {
+    const perms = createPermissions({
+      adapter: memoryAdapter(),
+      permissions: ["posts.edit"],
+      roles: ["admin"],
+      strict: true,
+    });
+    await perms.sync();
+    expect(() => perms.isPermission("unknown")).not.toThrow();
+    expect(() => perms.isPermission(null)).not.toThrow();
+  });
+
+  it("isRole never throws, even in strict mode", async () => {
+    const perms = createPermissions({
+      adapter: memoryAdapter(),
+      permissions: ["posts.edit"],
+      roles: ["admin"],
+      strict: true,
+    });
+    await perms.sync();
+    expect(() => perms.isRole("unknown")).not.toThrow();
+    expect(() => perms.isRole(null)).not.toThrow();
+  });
+
+  it("isPermission rejects wildcards", async () => {
+    const perms = createPermissions({
+      adapter: memoryAdapter(),
+      permissions: ["posts.edit"],
+      roles: ["admin"],
+    });
+    await perms.sync();
+    expect(perms.isPermission("posts.*")).toBe(false);
+    expect(perms.isPermission("*")).toBe(false);
+  });
+
+  it("works without config lists (plain JS style)", async () => {
+    const perms = createPermissions({ adapter: memoryAdapter() });
+    await perms.createPermission("posts.edit");
+    await perms.createRole("admin");
+    await perms.sync();
+
+    // Load the catalog into cache so isPermission/isRole can check it
+    await perms.getAllPermissions();
+    await perms.getAllRoles();
+
+    expect(perms.isPermission("posts.edit")).toBe(true);
+    expect(perms.isPermission("posts.delete")).toBe(false);
+    expect(perms.isRole("admin")).toBe(true);
+    expect(perms.isRole("editor")).toBe(false);
+  });
+});

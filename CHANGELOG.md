@@ -13,6 +13,10 @@ First release.
 - **Core:** `createPermissions()` with roles, permissions, direct user permissions, `can`,
   `canAny`, `canAll`, `canOwn`, `authorize`, `hasRole`, `hasAnyRole`, `hasAllRoles`,
   `getRoles`, `getPermissions({ expand })` and `sync()`.
+- Type guards: `perms.isPermission()` and `perms.isRole()` for validating dynamic names
+  (never throw, even in strict mode).
+- Type inference helpers: `InferPermission<typeof perms>` and `InferRole<typeof perms>` for
+  extracting the configured permission and role types.
 - Wildcards: `"posts.*"` and `"*"`.
 - Strict mode (on by default): unknown names throw with a "did you mean" suggestion.
 - TypeScript autocomplete and compile errors for permission and role names.

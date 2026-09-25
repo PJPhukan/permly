@@ -12,6 +12,8 @@ export type { NotFoundDetails, PermissionsErrorCode } from "./core/errors";
 export type {
   CacheOptions,
   GetPermissionsOptions,
+  InferPermission,
+  InferRole,
   PermissionAdapter,
   Permissions,
   PermissionsConfig,
