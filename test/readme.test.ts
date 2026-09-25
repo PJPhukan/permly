@@ -94,10 +94,27 @@ export async function setupPermissions() {
   }
 }
 `;
-const PERMLY_TS = PERMLY_JS.replace(
-  "export async function setupPermissions() {",
-  "export async function setupPermissions(): Promise<void> {",
-);
+const PERMLY_TS = `import type { InferPermission, InferRole } from "permly";
+import { createPermissions } from "permly";
+import { memoryAdapter } from "permly/memory";
+
+export const perms = createPermissions({
+  adapter: memoryAdapter(),
+  permissions: ["posts.create", "posts.edit", "posts.edit.own", "posts.delete"],
+  roles: ["admin", "editor", "viewer"],
+});
+
+export type Permission = InferPermission<typeof perms>;
+export type Role = InferRole<typeof perms>;
+
+export async function setupPermissions(): Promise<void> {
+  const { createdRoles } = await perms.sync();
+  if (createdRoles.includes("admin")) await perms.role("admin").givePermission("*");
+  if (createdRoles.includes("editor")) {
+    await perms.role("editor").givePermission("posts.create", "posts.edit.own");
+  }
+}
+`;
 
 // Examples may call app.listen(3000): listen on a random free port instead, without keeping
 // the process alive.
