@@ -56,7 +56,7 @@ app.post("/posts", requirePermission(perms, "posts.create"), (_req, res) => {
 
 <p align="center">
   <a href="#quick-start">Quick Start</a> ·
-  <a href="#core-concepts">Docs</a> ·
+  <a href="https://permly-website.vercel.app/">Docs</a> ·
   <a href="https://github.com/PJPhukan/permly/tree/main/examples">Examples</a> ·
   <a href="#faq-and-troubleshooting">FAQ</a> ·
   <a href="https://github.com/sponsors/PJPhukan">Sponsor</a>
