@@ -9,8 +9,6 @@
     "acl",
     "authorization",
     "access-control",
-    "spatie",
-    "laravel-permission",
     "express",
     "middleware",
     "mysql",

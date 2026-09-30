@@ -4,7 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [0.1.0] - Unreleased
+## Unreleased
+
+### Changed
+
+- **Docs:** README and npm keywords no longer reference Spatie/Laravel; added a short link to the [Laravel migration guide](https://permly-website.vercel.app/docs/migration/coming-from-laravel).
+
+## [0.1.0]
 
 First release.
 

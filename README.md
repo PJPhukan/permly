@@ -88,7 +88,7 @@ app.post("/posts", requirePermission(perms, "posts.create"), (_req, res) => {
 - [Guides](#guides)
 - [API reference](#api-reference)
 - [FAQ and troubleshooting](#faq-and-troubleshooting)
-- [Coming from Laravel (spatie/laravel-permission)](#coming-from-laravel-spatielaravel-permission)
+- [Coming from Laravel](#coming-from-laravel)
 - [Support permly](#support-permly) · [Contributing](#contributing) · [Security](#security) ·
   [License](#license)
 
@@ -1557,33 +1557,9 @@ GraphQL, background jobs); the Express middleware is an optional extra.
 **Does permly change my users table?** No. It only uses its own `perm_*` tables and stores your
 user ids as strings.
 
-## Coming from Laravel (spatie/laravel-permission)
+## Coming from Laravel
 
-The ideas are the same; permly's calls are async and hang off `perms.user(id)`.
-
-| spatie/laravel-permission                | permly                                            |
-| ---------------------------------------- | ------------------------------------------------- |
-| `Permission::create(['name' => 'edit'])` | `permissions: [...]` in config + `perms.sync()`   |
-| `Role::create(['name' => 'writer'])`     | `roles: [...]` in config, or `perms.createRole()` |
-| `$role->givePermissionTo('edit')`        | `perms.role("writer").givePermission("edit")`     |
-| `$role->revokePermissionTo('edit')`      | `perms.role("writer").revokePermission("edit")`   |
-| `$role->syncPermissions([...])`          | `perms.role("writer").syncPermissions([...])`     |
-| `$user->assignRole('writer')`            | `perms.user(id).assignRole("writer")`             |
-| `$user->removeRole('writer')`            | `perms.user(id).removeRole("writer")`             |
-| `$user->syncRoles([...])`                | `perms.user(id).syncRoles([...])`                 |
-| `$user->givePermissionTo('edit')`        | `perms.user(id).givePermission("edit")`           |
-| `$user->can('edit')` / `hasPermissionTo` | `await perms.user(id).can("edit")`                |
-| `$user->hasAnyPermission([...])`         | `perms.user(id).canAny([...])`                    |
-| `$user->hasAllPermissions([...])`        | `perms.user(id).canAll([...])`                    |
-| `$user->hasRole('writer')`               | `perms.user(id).hasRole("writer")`                |
-| `$user->hasAnyRole([...])`               | `perms.user(id).hasAnyRole([...])`                |
-| `$user->getAllPermissions()`             | `perms.user(id).getPermissions({ expand: true })` |
-| `$user->getRoleNames()`                  | `perms.user(id).getRoles()`                       |
-| `middleware('permission:edit')`          | `requirePermission(perms, "edit")`                |
-| `middleware('role:admin')`               | `requireRole(perms, "admin")`                     |
-| Wildcard permissions (`posts.*`)         | Built in                                          |
-| Policies for "own" records               | `canOwn()` / `guard.own()`                        |
-| Teams                                    | Planned (the `team_id` column is already there)   |
+Coming from Laravel? See the [migration guide](https://permly-website.vercel.app/docs/migration/coming-from-laravel).
 
 ## Support permly
 
