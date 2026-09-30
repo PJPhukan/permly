@@ -647,6 +647,7 @@ interface UpdateRequest {
 ```
 
 The generated `permly.js` exports these types automatically using `InferPermission` and `InferRole`. Use them for:
+
 - Validating permission names from API requests
 - Checking database values before using them
 - Type-checking dynamic names in tests
