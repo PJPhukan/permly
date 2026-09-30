@@ -2,10 +2,10 @@
 export type UserId = string | number | { toHexString(): string };
 
 /** Extract the permission type P from `typeof perms`. Example: `type Permission = InferPermission<typeof perms>` */
-export type InferPermission<T> = T extends Permissions<infer P, any> ? P : never;
+export type InferPermission<T> = T extends Permissions<infer P, infer _R> ? P : never;
 
 /** Extract the role type R from `typeof perms`. Example: `type Role = InferRole<typeof perms>` */
-export type InferRole<T> = T extends Permissions<any, infer R> ? R : never;
+export type InferRole<T> = T extends Permissions<infer _P, infer R> ? R : never;
 
 // Depth counter for Wildcard: at most 5 prefix levels ("a.*" … "a.b.c.d.e.*") are typed, which
 // keeps type-checking fast for large configs. Deeper wildcards still work at runtime.

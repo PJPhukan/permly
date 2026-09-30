@@ -11,8 +11,11 @@ export default defineConfig(
   { languageOptions: { globals: globals.node } },
   {
     rules: {
-      // `_`-prefixed arguments are intentionally unused (e.g. Express's 4-argument error handler).
-      "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_" }],
+      // `_`-prefixed variables and arguments are intentionally unused (e.g. Express's 4-argument error handler).
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
     },
   },
   {
